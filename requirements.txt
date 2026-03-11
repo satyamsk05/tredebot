@@ -1,0 +1,9 @@
+python-telegram-bot[job-queue]>=21.0
+python-dotenv
+requests
+web3
+py-clob-client
+eth-account
+rich
+httpx
+apscheduler

@@ -1,0 +1,16 @@
+.env
+data/
+logs/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.db
+venv/
+.gemini/
+.antigravityignore
+pause.flag
+*.log
+data/*.db
+data/*.json
+data/*.txt
