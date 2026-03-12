@@ -49,15 +49,27 @@ def send_telegram_notify(message):
 def bot_loop():
     mg = Martingale()
     
-    # Initialize UI state
+    # Define supported markets
+    MARKETS = [
+        {"id": "btc_5m", "interval": 5, "label": "BTC_5m"},
+        {"id": "btc_15m", "interval": 15, "label": "BTC_15m"}
+    ]
+    
+    # Initialize Market States
+    market_states = {}
+    for m in MARKETS:
+        market_states[m['id']] = {
+            "last_ts": 0,
+            "pending_bet": None,
+            "startup_candles": 0
+        }
+    
+    # Initialize UI state (Default to 5m for header)
     ui.status_data["balance"] = str(get_balance())
-    ui.status_data["martingale_step"] = mg.get_step("BTC")
-    ui.status_data["bet_amount"] = mg.get_bet("BTC")
+    ui.status_data["martingale_step"] = mg.get_step("BTC_5m")
+    ui.status_data["bet_amount"] = mg.get_bet("BTC_5m")
 
-    last_processed_ts = 0
-    pending_bet = None
     loop_count = 0
-    startup_candles_processed = 0
 
     log_info("Consolidating System - Launching Telegram Bot UI...")
     
@@ -65,16 +77,16 @@ def bot_loop():
     send_telegram_notify(
         "📈 *NODE INITIALIZED*\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"⚡️ Strategy: *BTC 5m Momentum*\n"
+        f"⚡️ Strategy: *BTC 3-Streak Reversal*\n"
         f"---------------------------\n"
         f"💵 Base:   *${INITIAL_BET_AMOUNT}*\n"
-        f"⏱️ Window:  *{INTERVAL}m Candles*\n"
+        f"⏱️ Window:  *Multi-TF Support (5m/15m)*\n"
         f"🧪 Mode:    *{'SIMULATION' if DRY_RUN else 'LIVE'}*\n"
         f"⏰ Heartbeat: *{datetime.now().strftime('%H:%M:%S')}*\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     )
     
-    # Start Telegram Bot as a separate process (Let it manage its own Rotating logger)
+    # Start Telegram Bot as a separate process
     tg_process = subprocess.Popen(
         [sys.executable, "-m", "app.bot.telegram_bot"],
         stdout=subprocess.DEVNULL,
@@ -96,190 +108,182 @@ def bot_loop():
     sys_signal.signal(sys_signal.SIGINT, cleanup)
     sys_signal.signal(sys_signal.SIGTERM, cleanup)
 
-    # Main Loop (Sequential Scrolling Logs)
+    # Main Loop
     log_status(True, ["BTC"])
     ui.update()
 
     while True:
         try:
             now_ts = int(time.time())
-            interval_sec = INTERVAL * 60
-            floor_ts = (now_ts // interval_sec) * interval_sec
-            next_boundary = floor_ts + interval_sec
-            seconds_until_next = next_boundary - now_ts
-
-            # Update countdown state
-            log_countdown(seconds_until_next)
-
-            # Refresh UI Header
-            ui.update()
-
-            # --- 1. SLOW/TRADING LOGIC (Every Candle Boundary) ---
-            if floor_ts > last_processed_ts:
-                # Only increment if it's not the very first immediate trigger
-                if last_processed_ts != 0:
-                    startup_candles_processed += 1
-                last_processed_ts = floor_ts
-                log_info(f"CANDLE CLOSED - Processing: {datetime.fromtimestamp(floor_ts-interval_sec).strftime('%H:%M')}")
-                
+            
+            # Load active markets from config
+            market_config = {"btc_5m": True, "btc_15m": False}
+            MARKET_CONFIG_FILE = "data/market_config.json"
+            if os.path.exists(MARKET_CONFIG_FILE):
                 try:
-                    closed_market = get_active_btc_market(offset_minutes=-INTERVAL)
-                    if closed_market:
-                        yes_token = closed_market['yes_token']
-                        close_price = get_last_trade_price(yes_token)
-                        
-                        if close_price is not None:
-                            market_dir = "UP" if close_price > 0.5 else "DOWN"
-                            trade_res = None
-                            
-                            # Process Pending Bet
-                            if pending_bet and pending_bet['timestamp'] == closed_market['timestamp']:
-                                dir_bet = pending_bet['direction']
-                                bet_amount = pending_bet.get('amount', mg.get_bet("BTC")) # Fallback
-                                if (dir_bet == "YES" and close_price > 0.5) or (dir_bet == "NO" and close_price < 0.5):
-                                    log_success(f"Trade WON! ({dir_bet}, Price: {close_price})")
-                                    mg.win("BTC")
-                                    
-                                    shares = pending_bet.get('shares', bet_amount / 0.50)
-                                    payout = shares * 1.0
-                                    profit = payout - bet_amount
-                                    update_virtual_balance(payout)
-                                    
-                                    # Record in DB
-                                    save_trade(
-                                        timestamp=int(time.time()),
-                                        market_id=closed_market['market_id'],
-                                        direction=dir_bet,
-                                        amount=bet_amount,
-                                        result="WIN",
-                                        payout=payout,
-                                        order_type=pending_bet.get('order_type', "AUTO")
-                                    )
-                                    
-                                    send_telegram_notify(
-                                        f"🏆 *SETTLEMENT: WIN*\n"
-                                        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                                        f"💰 Payout:   *+${payout:.2f}*\n"
-                                        f"💵 Profit:   *+${profit:.2f}*\n"
-                                        f"---------------------------\n"
-                                        f"📊 Position:  *{dir_bet}*\n"
-                                        f"📉 Close:     *{close_price}* (WIN)\n"
-                                        f"---------------------------\n"
-                                        f"🔄 System: Martingale Reset (L1)\n"
-                                        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                                    )
-                                    trade_res = "WIN"
-                                else:
-                                    log_error(f"Trade LOST! ({dir_bet}, Price: {close_price})")
-                                    mg.lose("BTC")
-                                    new_step = mg.get_step("BTC")
-                                    
-                                    # Record in DB
-                                    save_trade(
-                                        timestamp=int(time.time()),
-                                        market_id=closed_market['market_id'],
-                                        direction=dir_bet,
-                                        amount=bet_amount,
-                                        result="LOSS",
-                                        payout=0,
-                                        order_type=pending_bet.get('order_type', "AUTO")
-                                    )
-                                    
-                                    send_telegram_notify(
-                                        f"❌ *SETTLEMENT: LOSS*\n"
-                                        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                                        f"📉 Loss:     *- ${bet_amount:.2f}*\n"
-                                        f"---------------------------\n"
-                                        f"📊 Position:  *{dir_bet}*\n"
-                                        f"📈 Close:     *{close_price}* (LOSS)\n"
-                                        f"---------------------------\n"
-                                        f"⬆️ System: Martingale L{new_step} -> L{new_step+1}\n"
-                                        f"Risk: *${mg.get_bet('BTC')}*\n"
-                                        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                                    )
-                                    trade_res = "LOSS"
-                                pending_bet = None
-                            
-                            # This now updates the UI header state
-                            print_result_banner(trade_res, market_dir)
-                            
-                            save_candle(
-                                market_id=closed_market['market_id'], 
-                                token_id=yes_token, 
-                                timestamp=closed_market['timestamp'], 
-                                close_price=close_price
-                            )
-                            
-                            # Signal Check
-                            closes_candles = get_last_n_candles(3)
-                            closes = [c['close_price'] for c in closes_candles]
-                            trade_signal = check_signal(closes)
-                            
-                            if trade_signal:
-                                amount = mg.get_bet("BTC")
-                                if os.path.exists("pause.flag"):
-                                    log_warning("Bot is PAUSED. Skipping trade.")
-                                elif startup_candles_processed < 3:
-                                    log_warning(f"Startup Phase: Waiting for new candles ({startup_candles_processed}/3)")
-                                else:
-                                    next_market = get_active_btc_market(offset_minutes=0)
-                                    if next_market:
-                                        target_token = next_market['yes_token'] if trade_signal == "YES" else next_market['no_token']
-                                        # L1 = Market Order, L2-L7 = Limit Order
-                                        current_step = mg.get_step("BTC")
-                                        if current_step == 1:
-                                            order_type = "FOK"
-                                            limit_price = 0.99
-                                            order_name = "Market Order"
-                                        else:
-                                            order_type = "GTC"
-                                            limit_price = 0.50
-                                            order_name = "Limit Order"
+                    with open(MARKET_CONFIG_FILE, "r") as f:
+                        market_config = json.load(f)
+                except:
+                    pass
 
-                                        if place_btc_bet(target_token, amount, price=limit_price, order_type=order_type):
-                                            update_virtual_balance(-amount)
-                                            
-                                            actual_buy_price = get_last_trade_price(target_token)
-                                            if not actual_buy_price or actual_buy_price <= 0:
-                                                actual_buy_price = 0.50
-                                            if order_type == "GTC":
-                                                actual_buy_price = limit_price
-                                                
-                                            shares = amount / actual_buy_price
-                                            
-                                            pending_bet = {
-                                                "direction": trade_signal, 
-                                                "timestamp": next_market['timestamp'], 
-                                                "amount": amount,
-                                                "buy_price": actual_buy_price,
-                                                "shares": shares,
-                                                "order_type": order_type
-                                            }
-                                            log_trade(f"Placed ${amount} on {trade_signal} ({order_name} @ {actual_buy_price:.2f})")
-                                            
-                                            exec_time = datetime.now().strftime('%H:%M:%S')
-                                            send_telegram_notify(
-                                                f"🎯 *Auto Trade Executed*\n"
-                                                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                                                f"⏰ Time: *{exec_time}*\n"
-                                                f"---------------------------\n"
-                                                f"💰 Amount: *${amount}*\n"
-                                                f"📊 Side:   *{trade_signal}*\n"
-                                                f"---------------------------\n"
-                                                f"🪙 Shares: *{shares:.2f}* (@ {actual_buy_price:.2f})\n"
-                                                f"⚙️ Type:   *{order_name}*\n"
-                                                f"---------------------------\n"
-                                                f"📌 Market: *{next_market['question']}*\n"
-                                                f"---------------------------\n"
-                                                f"{'🧪 SIMULATION ACTIVE' if DRY_RUN else '💸 LIVE EXECUTION'}\n"
-                                            )
+            for m in MARKETS:
+                m_id = m['id']
+                if not market_config.get(m_id, False):
+                    continue
+                
+                state = market_states[m_id]
+                interval = m['interval']
+                interval_sec = interval * 60
+                m_floor_ts = (now_ts // interval_sec) * interval_sec
+                m_label = m['label']
 
+                # Update countdown and UI if it's 5m (primary UI market)
+                if m_id == "btc_5m":
+                    next_boundary = m_floor_ts + interval_sec
+                    log_countdown(next_boundary - now_ts)
+                    ui.update()
+
+                if m_floor_ts > state['last_ts']:
+                    # Only increment if it's not the very first immediate trigger
+                    if state['last_ts'] != 0:
+                        state['startup_candles'] += 1
+                    state['last_ts'] = m_floor_ts
+                    log_info(f"[{m_label}] CANDLE CLOSED - Processing: {datetime.fromtimestamp(m_floor_ts-interval_sec).strftime('%H:%M')}")
+                    
+                    try:
+                        # Fetch the market that just closed
+                        closed_market = get_active_btc_market(offset_minutes=-interval, interval=interval)
+                        if closed_market:
+                            yes_token = closed_market['yes_token']
+                            close_price = get_last_trade_price(yes_token)
+                            
+                            if close_price is not None:
+                                market_dir = "UP" if close_price > 0.5 else "DOWN"
+                                trade_res = None
+                                
+                                # Process Pending Bet for this market
+                                pending = state['pending_bet']
+                                if pending and pending['timestamp'] == closed_market['timestamp']:
+                                    dir_bet = pending['direction']
+                                    bet_amount = pending.get('amount', mg.get_bet(m_label))
+                                    if (dir_bet == "YES" and close_price > 0.5) or (dir_bet == "NO" and close_price < 0.5):
+                                        log_success(f"[{m_label}] Trade WON! ({dir_bet}, Price: {close_price})")
+                                        mg.win(m_label)
+                                        
+                                        shares = pending.get('shares', bet_amount / 0.50)
+                                        payout = shares * 1.0
+                                        update_virtual_balance(payout)
+                                        
+                                        save_trade(
+                                            timestamp=int(time.time()),
+                                            market_id=closed_market['market_id'],
+                                            direction=dir_bet,
+                                            amount=bet_amount,
+                                            result="WIN",
+                                            payout=payout,
+                                            order_type=pending.get('order_type', "AUTO"),
+                                            interval=interval
+                                        )
+                                        
+                                        send_telegram_notify(
+                                            f"🏆 *WIN: {m_label}*\n"
+                                            f"━━━━━━━━━━━━━━━━━━\n"
+                                            f"💰 Payout: *+${payout:.2f}*\n"
+                                            f"📈 Close:  *{close_price}*\n"
+                                            f"🔄 Martingale Reset\n"
+                                            f"━━━━━━━━━━━━━━━━━━"
+                                        )
+                                        trade_res = "WIN"
                                     else:
-                                        log_error("Could not find next market for signal.")
-                    else:
-                        log_error("Failed to fetch closed market data at boundary.")
-                except Exception as b_err:
-                    log_network_error("processing boundary", b_err)
+                                        log_error(f"[{m_label}] Trade LOST! ({dir_bet}, Price: {close_price})")
+                                        mg.lose(m_label)
+                                        
+                                        save_trade(
+                                            timestamp=int(time.time()),
+                                            market_id=closed_market['market_id'],
+                                            direction=dir_bet,
+                                            amount=bet_amount,
+                                            result="LOSS",
+                                            payout=0,
+                                            order_type=pending.get('order_type', "AUTO"),
+                                            interval=interval
+                                        )
+                                        
+                                        send_telegram_notify(
+                                            f"❌ *LOSS: {m_label}*\n"
+                                            f"━━━━━━━━━━━━━━━━━━\n"
+                                            f"📉 Loss:  *- ${bet_amount:.2f}*\n"
+                                            f"📈 Close: *{close_price}*\n"
+                                            f"⬆️ Next:  *L{mg.get_step(m_label)+1} (${mg.get_bet(m_label)})*\n"
+                                            f"━━━━━━━━━━━━━━━━━━"
+                                        )
+                                        trade_res = "LOSS"
+                                    state['pending_bet'] = None
+                                
+                                # Update UI banner for 5m results
+                                if m_id == "btc_5m":
+                                    print_result_banner(trade_res, market_dir)
+                                
+                                # Record candle in history
+                                save_candle(
+                                    market_id=closed_market['market_id'], 
+                                    token_id=yes_token, 
+                                    timestamp=closed_market['timestamp'], 
+                                    close_price=close_price,
+                                    interval=interval
+                                )
+                                
+                                # Signal Check (3-streak reversal strategy)
+                                closes_candles = get_last_n_candles(3, market_id=closed_market['market_id'])
+                                closes = [c['close_price'] for c in closes_candles]
+                                trade_signal = check_signal(closes)
+                                
+                                if trade_signal:
+                                    amount = mg.get_bet(m_label)
+                                    if os.path.exists("pause.flag"):
+                                        log_warning(f"[{m_label}] Bot is PAUSED. Skipping trade.")
+                                    elif state['startup_candles'] < 3:
+                                        log_warning(f"[{m_label}] Startup: Waiting for candles ({state['startup_candles']}/3)")
+                                    else:
+                                        # Get market for the NEXT candle
+                                        next_market = get_active_btc_market(offset_minutes=0, interval=interval)
+                                        if next_market:
+                                            target_token = next_market['yes_token'] if trade_signal == "YES" else next_market['no_token']
+                                            current_step = mg.get_step(m_label)
+                                            # L1 = Market Order (FOK), L2+ = Limit Order (GTC)
+                                            order_type = "FOK" if current_step == 0 else "GTC"
+                                            limit_price = 0.99 if order_type == "FOK" else 0.50
+                                            
+                                            if place_btc_bet(target_token, amount, price=limit_price, order_type=order_type):
+                                                update_virtual_balance(-amount)
+                                                actual_buy_price = get_last_trade_price(target_token) or 0.50
+                                                if order_type == "GTC":
+                                                    actual_buy_price = limit_price
+                                                
+                                                shares = amount / actual_buy_price
+                                                state['pending_bet'] = {
+                                                    "direction": trade_signal, 
+                                                    "timestamp": next_market['timestamp'], 
+                                                    "amount": amount,
+                                                    "shares": shares,
+                                                    "order_type": order_type
+                                                }
+                                                log_trade(f"[{m_label}] Placed ${amount} on {trade_signal}")
+                                                
+                                                exec_time = datetime.now().strftime('%H:%M:%S')
+                                                send_telegram_notify(
+                                                    f"🎯 *Auto Trade: {m_label}*\n"
+                                                    f"━━━━━━━━━━━━━━━━━━\n"
+                                                    f"⏰ Time: *{exec_time}*\n"
+                                                    f"💰 Amt:  *${amount}*\n"
+                                                    f"📊 Side: *{trade_signal}*\n"
+                                                    f"📌 {next_market['question']}\n"
+                                                    f"━━━━━━━━━━━━━━━━━━"
+                                                )
+                        else:
+                            log_error(f"[{m_label}] Failed to fetch market at boundary.")
+                    except Exception as b_err:
+                        log_network_error(f"processing {m_label} boundary", b_err)
 
             # --- 2. FAST/POLLING LOGIC (Every Loop) ---
             
@@ -292,18 +296,19 @@ def bot_loop():
                         for line in lines:
                             if line.strip(): log_telegram(line.strip())
                         open("logs/telegram_activity.log", "w").close()
-                except: pass
+                except:
+                    pass
 
-            # Sync Manual Bets
+            # Sync Manual Bets (Adopt to 5m by default)
             if os.path.exists("data/manual_bet.json"):
                 try:
                     with open("data/manual_bet.json", "r") as f:
                         manual_bet = json.load(f)
                     os.remove("data/manual_bet.json")
-                    pending_bet = manual_bet
-                    log_trade(f"Adopted Manual Bet for tracking: {pending_bet['direction']}")
-                except: pass
-
+                    market_states['btc_5m']['pending_bet'] = manual_bet
+                    log_trade(f"Adopted Manual Bet for 5m: {manual_bet['direction']}")
+                except:
+                    pass
 
             # Throttled Metadata (~30s)
             if loop_count % 30 == 0:
@@ -311,7 +316,9 @@ def bot_loop():
                     # Update Balance & Market Info
                     ui.status_data["balance"] = str(get_balance())
                     ui.status_data["virtual_balance"] = str(get_virtual_balance())
-                    active_market = get_active_btc_market(offset_minutes=0)
+                    
+                    # Show 5m market in header by default
+                    active_market = get_active_btc_market(offset_minutes=0, interval=5)
                     if active_market:
                         ui.status_data["active_market"] = active_market['question'].replace("Bitcoin 5-minute Up/Down for ", "")
                         y_p = get_last_trade_price(active_market['yes_token'])
@@ -319,9 +326,8 @@ def bot_loop():
                         ui.status_data["yes_price"] = f"{y_p:.4f}" if y_p is not None else "0.00"
                         ui.status_data["no_price"] = f"{n_p:.4f}" if n_p is not None else "0.00"
                     
-                    ui.status_data["martingale_step"] = mg.get_step("BTC")
-                    ui.status_data["bet_amount"] = mg.get_bet("BTC")
-                    # No manual print_summary() here anymore, it's done at top of loop
+                    ui.status_data["martingale_step"] = mg.get_step("BTC_5m")
+                    ui.status_data["bet_amount"] = mg.get_bet("BTC_5m")
                 except Exception as p_err:
                     log_network_error("polling status", p_err)
 

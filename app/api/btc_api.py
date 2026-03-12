@@ -1,7 +1,8 @@
-import requests
+import httpx
 import time
 import os
 import logging
+import asyncio
 from app.config import (
     POLY_API_KEY, POLY_API_SECRET, POLY_PASSPHRASE, 
     POLY_PRIVATE_KEY, FUNDER_ADDRESS, DRY_RUN
@@ -32,97 +33,101 @@ def get_clob_client():
         _client.set_credentials(creds)
     return _client
 
-def get_active_btc_market(offset_minutes=0):
-    """
-    Fetches the BTC 5m Up/Down market.
-    offset_minutes: 0 for the currently running candle, -5 for the previous candle.
-    """
+def get_active_btc_market(offset_minutes=0, interval=5):
+    """Synchronous version for main.py"""
     now = int(time.time()) + (offset_minutes * 60)
-    # 300 seconds = 5 minutes
-    ts_sec = (now // 300) * 300
-    slug = f"btc-updown-5m-{ts_sec}"
+    block_sec = interval * 60
+    ts_sec = (now // block_sec) * block_sec
+    slug = f"btc-updown-{interval}m-{ts_sec}"
     url = f"https://gamma-api.polymarket.com/markets/slug/{slug}"
     
     try:
-        res = requests.get(url, timeout=10)
-        if res.status_code == 200:
-            data = res.json()
-            tokens = data.get("clobTokenIds", [])
-            if isinstance(tokens, str):
-                import json
-                try:
-                    tokens = json.loads(tokens)
-                except Exception:
-                    tokens = []
-            
-            yes_token = tokens[0] if len(tokens) > 0 else None
-            no_token = tokens[1] if len(tokens) > 1 else None
-            
-            return {
-                "market_id": data.get("conditionId"),
-                "question": data.get("question"),
-                "yes_token": yes_token,
-                "no_token": no_token,
-                "timestamp": ts_sec
-            }
-        else:
-            logging.error(f"Market not found for slug {slug}. Status: {res.status_code}")
-            return None
+        with httpx.Client(timeout=10) as client:
+            res = client.get(url)
+            if res.status_code == 200:
+                data = res.json()
+                tokens = data.get("clobTokenIds", [])
+                if isinstance(tokens, str):
+                    import json
+                    try: tokens = json.loads(tokens)
+                    except: tokens = []
+                
+                return {
+                    "market_id": data.get("conditionId"),
+                    "question": data.get("question"),
+                    "yes_token": tokens[0] if len(tokens) > 0 else None,
+                    "no_token": tokens[1] if len(tokens) > 1 else None,
+                    "timestamp": ts_sec,
+                    "interval": interval
+                }
     except Exception as e:
-        logging.error(f"Error fetching active BTC market: {e}")
-        return None
+        logging.error(f"Error fetching sync market: {e}")
+    return None
+
+async def async_get_active_btc_market(offset_minutes=0, interval=5):
+    """Asynchronous version for telegram_bot.py"""
+    now = int(time.time()) + (offset_minutes * 60)
+    block_sec = interval * 60
+    ts_sec = (now // block_sec) * block_sec
+    slug = f"btc-updown-{interval}m-{ts_sec}"
+    url = f"https://gamma-api.polymarket.com/markets/slug/{slug}"
+    
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            res = await client.get(url)
+            if res.status_code == 200:
+                data = res.json()
+                tokens = data.get("clobTokenIds", [])
+                if isinstance(tokens, str):
+                    import json
+                    try: tokens = json.loads(tokens)
+                    except: tokens = []
+                
+                return {
+                    "market_id": data.get("conditionId"),
+                    "question": data.get("question"),
+                    "yes_token": tokens[0] if len(tokens) > 0 else None,
+                    "no_token": tokens[1] if len(tokens) > 1 else None,
+                    "timestamp": ts_sec,
+                    "interval": interval
+                }
+    except Exception as e:
+        logging.error(f"Error fetching async market: {e}")
+    return None
 
 def get_last_trade_price(token_id):
-    """Fetches the last trade price of the given token from CLOB API."""
+    """Synchronous version"""
     url = f"https://clob.polymarket.com/last-trade-price?token_id={token_id}"
     try:
-        res = requests.get(url, timeout=10)
-        if res.status_code == 200:
-            return float(res.json().get('price', 0))
-        return None
-    except Exception as e:
-        logging.error(f"Error fetching last trade price: {e}")
-        return None
+        with httpx.Client(timeout=10) as client:
+            res = client.get(url)
+            return float(res.json().get('price', 0)) if res.status_code == 200 else None
+    except: return None
+
+async def async_get_last_trade_price(token_id):
+    """Asynchronous version"""
+    url = f"https://clob.polymarket.com/last-trade-price?token_id={token_id}"
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            res = await client.get(url)
+            return float(res.json().get('price', 0)) if res.status_code == 200 else None
+    except: return None
 
 def place_btc_bet(token_id, amount, price=0.99, order_type="FOK"):
-    """
-    Places a BUY order for the given token ID.
-    order_type: 'FOK' for market orders, 'GTC' for limit orders.
-    Uses DRY_RUN env var to prevent actual betting if testing.
-    """
-    logging.info(f"Preparing to bet {amount} units on Token {token_id} @ price {price} ({order_type})")
-    
-    if DRY_RUN:
-        logging.info("[DRY RUN] Order simulation successful.")
-        return True
-
+    """Synchronous weightlifter"""
+    if DRY_RUN: return True
     try:
         client = get_clob_client()
-        order_args = OrderArgs(
-            price=price,
-            size=amount,
-            side="BUY",
-            token_id=token_id
-        )
-        
-        # Create and sign the order.
+        order_args = OrderArgs(price=price, size=amount, side="BUY", token_id=token_id)
         signed_order = client.create_order(order_args)
-        
-        # Post the order to Polymarket CLOB.
         poly_order_type = OrderType.FOK if order_type == "FOK" else OrderType.GTC
         resp = client.post_order(signed_order, poly_order_type)
-        
-        if resp and resp.get("success"):
-            logging.info(f"Order placed successfully. ID: {resp.get('orderID')} ({order_type})")
-            return True
-        else:
-            logging.error(f"Order failed: {resp.get('errorMsg', resp)}")
-            return False
-            
-    except PolyApiException as e:
-        logging.error(f"Polymarket API Exception: {e}")
-        return False
+        return resp and resp.get("success")
     except Exception as e:
-        logging.error(f"Unexpected error during order placement: {e}")
+        logging.error(f"Order error: {e}")
         return False
+
+async def async_place_btc_bet(token_id, amount, price=0.99, order_type="FOK"):
+    """Offloads the synchronous SDK call to a thread to keep bot alive"""
+    return await asyncio.to_thread(place_btc_bet, token_id, amount, price, order_type)
 
