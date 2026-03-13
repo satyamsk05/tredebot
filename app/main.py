@@ -234,7 +234,7 @@ def bot_loop():
                                 )
                                 
                                 # Signal Check (3-streak reversal strategy)
-                                closes_candles = get_last_n_candles(3, market_id=closed_market['market_id'])
+                                closes_candles = get_last_n_candles(3, interval=interval)
                                 closes = [c['close_price'] for c in closes_candles]
                                 trade_signal = check_signal(closes)
                                 

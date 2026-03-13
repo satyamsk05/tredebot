@@ -63,7 +63,7 @@ def save_candle(market_id, token_id, timestamp, close_price, interval=5):
     ''', (market_id, token_id, timestamp, close_price, interval))
     conn.commit()
     conn.close()
-    # logging.info(f"Saved candle for {market_id} ({interval}m) at {timestamp}: Price {close_price}") # Removed as per user's edit
+    logging.info(f"Saved candle for {market_id} ({interval}m) at {timestamp}: Price {close_price}")
 
 async def async_save_candle(market_id, token_id, timestamp, close_price, interval=5):
     return await asyncio.to_thread(save_candle, market_id, token_id, timestamp, close_price, interval)
