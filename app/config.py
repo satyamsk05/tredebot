@@ -16,6 +16,12 @@ FUNDER_ADDRESS = None if funder and funder.startswith("your_") else funder
 wallet = os.getenv("WALLET_ADDRESS")
 WALLET_ADDRESS = None if wallet and wallet.startswith("your_") else wallet
 
+# Builder API Keys (Gasless Redemption)
+BUILDER_API_KEY = os.getenv("BUILDER_API_KEY")
+BUILDER_SECRET = os.getenv("BUILDER_SECRET")
+BUILDER_PASSPHRASE = os.getenv("BUILDER_PASSPHRASE")
+RELAYER_URL = os.getenv("RELAYER_URL", "https://relayer-v2.polymarket.com") 
+
 # Network Settings
 RPC_URL = os.getenv("RPC_URL", "https://polygon-rpc.com")
 
@@ -24,7 +30,9 @@ DRY_RUN = os.getenv("DRY_RUN", "true").lower() == "true"
 INTERVAL = int(os.getenv("INTERVAL", "5"))
 INITIAL_BET_AMOUNT = int(os.getenv("INITIAL_BET_AMOUNT", "3"))
 VIRTUAL_BALANCE_START = float(os.getenv("VIRTUAL_BALANCE_START", "500.00"))
-COINS = os.getenv("COINS", "BTC").split(",")
+COINS = os.getenv("COINS", "BTC,ETH,SOL").split(",")
+ENABLE_5M = os.getenv("ENABLE_5M", "false").lower() == "true"
+ENABLE_15M = os.getenv("ENABLE_15M", "false").lower() == "true" # Default off, we'll initialize SOL 15m separately
 
 # Advanced / Hardcoded
 WS_URL = "wss://ws-live-data.polymarket.com"

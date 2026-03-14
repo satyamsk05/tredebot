@@ -1,9 +1,17 @@
-python-telegram-bot[job-queue]>=21.0
-python-dotenv
-requests
-web3
-py-clob-client
-eth-account
-rich
-httpx
-apscheduler
+# 🤖 Polymarket Alpha Trade Bot - Dependencies
+# Optimize for Python 3.10+
+
+# Bot Framework & Scheduler
+python-telegram-bot[job-queue]==21.0.1
+apscheduler==3.10.4
+
+# Polymarket API & Blockchain Integration
+py-clob-client==1.5.0
+web3==6.15.1
+eth-account==0.11.0
+httpx==0.27.0
+requests==2.31.0
+
+# UI & Utilities
+rich==13.7.1
+python-dotenv==1.0.1

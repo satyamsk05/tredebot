@@ -7,20 +7,23 @@ import subprocess
 import signal as sys_signal
 from datetime import datetime
 
-from app.config import INTERVAL, DRY_RUN, INITIAL_BET_AMOUNT
+from app.config import (
+    INTERVAL, DRY_RUN, INITIAL_BET_AMOUNT, WALLET_ADDRESS, 
+    FUNDER_ADDRESS, ENABLE_5M, ENABLE_15M, COINS
+)
 from app.logger import ui, log_info, log_success, log_warning, log_error, log_trade, log_countdown, log_telegram, log_status, print_summary, print_result_banner, log_network_error
 from app.db import save_candle, get_last_n_candles, save_trade
-from app.api.btc_api import get_active_btc_market, get_last_trade_price, place_btc_bet
+from app.api.polymarket_api import get_active_market, get_last_trade_price, place_bet, fetch_redeemable_positions
 from app.trading.strategy import check_signal
 from app.trading.martingale import Martingale
-from app.trading.trader import get_balance, get_virtual_balance, update_virtual_balance
+from app.trading.trader import get_balance, get_virtual_balance, update_virtual_balance, redeem_winnings, get_matic_balance, gasless_redeem
 
 # Configure logging to file only (Console is managed by SimpleLogger)
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - [%(levelname)s] - %(message)s',
     handlers=[
-        logging.FileHandler("logs/btc_bot.log")
+        logging.FileHandler("logs/trading_bot.log")
     ]
 )
 
@@ -49,11 +52,45 @@ def send_telegram_notify(message):
 def bot_loop():
     mg = Martingale()
     
-    # Define supported markets
-    MARKETS = [
-        {"id": "btc_5m", "interval": 5, "label": "BTC_5m"},
-        {"id": "btc_15m", "interval": 15, "label": "BTC_15m"}
-    ]
+    # Define supported markets dynamically
+    MARKETS = []
+    
+    # Initialize data/market_config.json if not exists
+    MARKET_CONFIG_FILE = "data/market_config.json"
+    config = {}
+    if os.path.exists(MARKET_CONFIG_FILE):
+        try:
+            with open(MARKET_CONFIG_FILE, "r") as f:
+                config = json.load(f)
+        except: pass
+    
+    # Default: SOL 15m ON, others OFF
+    default_config = {}
+    for coin in COINS:
+        default_config[f"{coin.lower()}_5m"] = False
+        default_config[f"{coin.lower()}_15m"] = False
+    
+    # Explicit user request: Default SOL 15m ON
+    if "sol_15m" in default_config:
+        default_config["sol_15m"] = True
+    
+    # Merge existing config or use default
+    if not config:
+        config = default_config
+        with open(MARKET_CONFIG_FILE, "w") as f:
+            json.dump(config, f, indent=4)
+    
+    # Build live markets list based on config file
+    for key, enabled in config.items():
+        if enabled:
+            # key format: btc_5m
+            parts = key.split("_")
+            coin = parts[0].upper()
+            interval = int(parts[1].replace("m", ""))
+            MARKETS.append({"id": key, "coin": coin, "interval": interval, "label": f"{coin}_{interval}m"})
+    
+    # Primary market for UI updates (first enabled)
+    PRIMARY_MARKET_ID = MARKETS[0]['id'] if MARKETS else None
     
     # Initialize Market States
     market_states = {}
@@ -64,12 +101,18 @@ def bot_loop():
             "startup_candles": 0
         }
     
-    # Initialize UI state (Default to 5m for header)
+    # Initialize UI state (Default to first active market or SOL if possible)
     ui.status_data["balance"] = str(get_balance())
-    ui.status_data["martingale_step"] = mg.get_step("BTC_5m")
-    ui.status_data["bet_amount"] = mg.get_bet("BTC_5m")
+    first_m = MARKETS[0]['label'] if MARKETS else "SOL_15m"
+    ui.status_data["active_market"] = first_m
+    ui.status_data["martingale_step"] = mg.get_step(first_m)
+    ui.status_data["bet_amount"] = mg.get_bet(first_m)
 
     loop_count = 0
+    last_redemption_check = 0
+    
+    matic_bal = get_matic_balance()
+    log_info(f"System Initialized. Signer MATIC Balance: {matic_bal} MATIC")
 
     log_info("Consolidating System - Launching Telegram Bot UI...")
     
@@ -82,6 +125,7 @@ def bot_loop():
         f"💵 Base:   *${INITIAL_BET_AMOUNT}*\n"
         f"⏱️ Window:  *Multi-TF Support (5m/15m)*\n"
         f"🧪 Mode:    *{'SIMULATION' if DRY_RUN else 'LIVE'}*\n"
+        f"⛽ Gas:     *{matic_bal} MATIC*\n"
         f"⏰ Heartbeat: *{datetime.now().strftime('%H:%M:%S')}*\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     )
@@ -116,15 +160,19 @@ def bot_loop():
         try:
             now_ts = int(time.time())
             
-            # Load active markets from config
-            market_config = {"btc_5m": True, "btc_15m": False}
+            # Hot-Reload active markets from config
+            market_config = {} # Initialize empty, will be populated from file or default_config
             MARKET_CONFIG_FILE = "data/market_config.json"
-            if os.path.exists(MARKET_CONFIG_FILE):
-                try:
+            try:
+                if os.path.exists(MARKET_CONFIG_FILE):
                     with open(MARKET_CONFIG_FILE, "r") as f:
-                        market_config = json.load(f)
-                except:
-                    pass
+                        saved_config = json.load(f)
+                    market_config.update(saved_config)
+                else:
+                    # Create initial config from .env
+                    with open(MARKET_CONFIG_FILE, "w") as f:
+                        json.dump(market_config, f)
+            except: pass
 
             for m in MARKETS:
                 m_id = m['id']
@@ -132,13 +180,14 @@ def bot_loop():
                     continue
                 
                 state = market_states[m_id]
-                interval = m['interval']
-                interval_sec = interval * 60
+                m_coin = m['coin']
+                m_interval = m['interval']
+                interval_sec = m_interval * 60
                 m_floor_ts = (now_ts // interval_sec) * interval_sec
                 m_label = m['label']
 
-                # Update countdown and UI if it's 5m (primary UI market)
-                if m_id == "btc_5m":
+                # Update countdown and UI if it's the primary UI market
+                if m_id == PRIMARY_MARKET_ID:
                     next_boundary = m_floor_ts + interval_sec
                     log_countdown(next_boundary - now_ts)
                     ui.update()
@@ -152,7 +201,7 @@ def bot_loop():
                     
                     try:
                         # Fetch the market that just closed
-                        closed_market = get_active_btc_market(offset_minutes=-interval, interval=interval)
+                        closed_market = get_active_market(coin=m_coin, offset_minutes=-m_interval, interval=m_interval)
                         if closed_market:
                             yes_token = closed_market['yes_token']
                             close_price = get_last_trade_price(yes_token)
@@ -174,6 +223,9 @@ def bot_loop():
                                         payout = shares * 1.0
                                         update_virtual_balance(payout)
                                         
+                                        # Outcome index for bitmask: YES = 1 (bit 0), NO = 2 (bit 1)
+                                        outcome_idx = 1 if dir_bet == "YES" else 2
+
                                         save_trade(
                                             timestamp=int(time.time()),
                                             market_id=closed_market['market_id'],
@@ -182,7 +234,8 @@ def bot_loop():
                                             result="WIN",
                                             payout=payout,
                                             order_type=pending.get('order_type', "AUTO"),
-                                            interval=interval
+                                            interval=interval,
+                                            outcome_index=outcome_idx
                                         )
                                         
                                         send_telegram_notify(
@@ -220,8 +273,8 @@ def bot_loop():
                                         trade_res = "LOSS"
                                     state['pending_bet'] = None
                                 
-                                # Update UI banner for 5m results
-                                if m_id == "btc_5m":
+                                # Update UI banner for primary market results
+                                if m_id == PRIMARY_MARKET_ID:
                                     print_result_banner(trade_res, market_dir)
                                 
                                 # Record candle in history
@@ -246,7 +299,7 @@ def bot_loop():
                                         log_warning(f"[{m_label}] Startup: Waiting for candles ({state['startup_candles']}/3)")
                                     else:
                                         # Get market for the NEXT candle
-                                        next_market = get_active_btc_market(offset_minutes=0, interval=interval)
+                                        next_market = get_active_market(coin=m_coin, offset_minutes=0, interval=interval)
                                         if next_market:
                                             target_token = next_market['yes_token'] if trade_signal == "YES" else next_market['no_token']
                                             current_step = mg.get_step(m_label)
@@ -254,7 +307,8 @@ def bot_loop():
                                             order_type = "FOK" if current_step == 0 else "GTC"
                                             limit_price = 0.99 if order_type == "FOK" else 0.50
                                             
-                                            if place_btc_bet(target_token, amount, price=limit_price, order_type=order_type):
+                                            success = place_bet(target_token, amount, coin=m['coin'], price=limit_price, order_type=order_type)
+                                            if success:
                                                 update_virtual_balance(-amount)
                                                 actual_buy_price = get_last_trade_price(target_token) or 0.50
                                                 if order_type == "GTC":
@@ -296,8 +350,8 @@ def bot_loop():
                         for line in lines:
                             if line.strip(): log_telegram(line.strip())
                         open("logs/telegram_activity.log", "w").close()
-                except:
-                    pass
+                except Exception as e:
+                    logging.error(f"Error handling Telegram activity: {e}")
 
             # Sync Manual Bets (Adopt to 5m by default)
             if os.path.exists("data/manual_bet.json"):
@@ -305,31 +359,65 @@ def bot_loop():
                     with open("data/manual_bet.json", "r") as f:
                         manual_bet = json.load(f)
                     os.remove("data/manual_bet.json")
-                    market_states['btc_5m']['pending_bet'] = manual_bet
-                    log_trade(f"Adopted Manual Bet for 5m: {manual_bet['direction']}")
+                    # Adopt to first available market or specific btc_5m if exists
+                    m_key = 'btc_5m' if 'btc_5m' in market_states else (list(market_states.keys())[0] if market_states else None)
+                    if m_key:
+                        market_states[m_key]['pending_bet'] = manual_bet
+                        log_trade(f"Adopted Manual Bet for {m_key}: {manual_bet['direction']}")
                 except:
                     pass
 
-            # Throttled Metadata (~30s)
+            # Update Metadata periodically
             if loop_count % 30 == 0:
                 try:
-                    # Update Balance & Market Info
                     ui.status_data["balance"] = str(get_balance())
                     ui.status_data["virtual_balance"] = str(get_virtual_balance())
-                    
-                    # Show 5m market in header by default
-                    active_market = get_active_btc_market(offset_minutes=0, interval=5)
-                    if active_market:
-                        ui.status_data["active_market"] = active_market['question'].replace("Bitcoin 5-minute Up/Down for ", "")
-                        y_p = get_last_trade_price(active_market['yes_token'])
-                        n_p = get_last_trade_price(active_market['no_token'])
-                        ui.status_data["yes_price"] = f"{y_p:.4f}" if y_p is not None else "0.00"
-                        ui.status_data["no_price"] = f"{n_p:.4f}" if n_p is not None else "0.00"
-                    
-                    ui.status_data["martingale_step"] = mg.get_step("BTC_5m")
-                    ui.status_data["bet_amount"] = mg.get_bet("BTC_5m")
+                    ui.status_data["matic_balance"] = str(get_matic_balance())
                 except Exception as p_err:
                     log_network_error("polling status", p_err)
+
+            # --- 3. AUTO REDEMPTION (~5 Minutes) ---
+            if now_ts - last_redemption_check >= 300:
+                last_redemption_check = now_ts
+                log_info("Running background Auto-Redemption check...")
+                try:
+                    # Scan both primary and funder wallet
+                    wallets = list(set(filter(None, [WALLET_ADDRESS, FUNDER_ADDRESS])))
+                    for wallet in wallets:
+                        redeemables = fetch_redeemable_positions(wallet)
+                        if redeemables:
+                            log_success(f"Auto-Redeem: Found {len(redeemables)} winning positions for {wallet[:10]}...")
+                            for pos in redeemables:
+                                cond_id = pos['condition_id']
+                                idx = pos['outcome_index']
+                                payout = pos['payout']
+                                
+                                log_info(f"Initiating claim for {cond_id[:10]}... (${payout:.2f})")
+                                
+                                # 1. Try Gasless (Paid by Polymarket)
+                                success = gasless_redeem(cond_id, idx, wallet)
+                                
+                                # 2. Fallback to On-Chain (Paid by your MATIC)
+                                if not success:
+                                    log_warning("Gasless claim failed or unavailable. Falling back to on-chain...")
+                                    success = redeem_winnings(cond_id, idx, wallet)
+                                
+                                if success:
+                                    log_success(f"Claim Successful: ${payout:.2f}")
+                                    send_telegram_notify(
+                                        f"🎁 *AUTO-CLAIM SUCCESS*\n"
+                                        f"━━━━━━━━━━━━━━━━━━\n"
+                                        f"💰 Payout: *${payout:.2f} USDC.e*\n"
+                                        f"🏦 Wallet: `{wallet[:6]}...{wallet[-4:]}`\n"
+                                        f"━━━━━━━━━━━━━━━━━━"
+                                    )
+                                else:
+                                    log_error(f"Auto-Claim failed for {cond_id[:10]}. Will retry in 5m.")
+                        else:
+                            # log_info(f"No winnings found for {wallet[:10]}...")
+                            pass
+                except Exception as r_err:
+                    log_error(f"Auto-Redemption Task Error: {r_err}")
 
             loop_count += 1
             time.sleep(1)

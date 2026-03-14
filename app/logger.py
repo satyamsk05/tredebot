@@ -30,6 +30,7 @@ class SimpleLogger:
             "next_sync": "00:00",
             "yes_price": "0.00",
             "no_price": "0.00",
+            "matic_balance": "0.0000",
             "last_result": None,
             "last_dir": None,
             "pid": os.getpid()
@@ -61,7 +62,7 @@ class SimpleLogger:
         
         # 2. WARNING + DASHBOARD TITLE (compact)
         frame.append(f"{W}  " + "─"*(self.width-4))
-        frame.append(f"{W}    {Y}PREVIEW — USE AT OWN RISK | BTC 5M UP/DOWN STRATEGY{W}")
+        frame.append(f"{W}    {Y}PREVIEW — USE AT OWN RISK | MULTI-ASSET UP/DOWN STRATEGY{W}")
         
         timestamp = datetime.now().strftime('%H:%M:%S')
         title = f" {W}TRADING TERMINAL v4.0 - {timestamp} "
@@ -89,10 +90,13 @@ class SimpleLogger:
         l2 += f"{mg}  "
         frame.append(l2)
         
-        # Row 3: Live Prices
+        # Row 3: Live Prices & Gas
         pr = f"{W}YES PROB: {G}{self.status_data['yes_price']} {W}| NO PROB: {R}{self.status_data['no_price']}"
-        l3_pad = (self.width - vlen(pr)) // 2
-        frame.append(" " * l3_pad + pr)
+        gas = f"{W}GAS: {Y}{self.status_data.get('matic_balance', '0.0')} MATIC"
+        l3 = f"  {pr}"
+        l3 += " " * (self.width - vlen(l3) - vlen(gas) - 2)
+        l3 += f"{gas}  "
+        frame.append(l3)
         
         frame.append(f"{C}" + "─"*self.width + f"{W}")
         
@@ -155,6 +159,8 @@ def log_warning(msg):
 
 def log_error(msg):
     ui.print_log("ERROR", msg, R)
+    import logging
+    logging.error(f"UI_ERROR: {msg}")
 
 def log_trade(msg):
     ui.print_log("TRADE", msg, C)

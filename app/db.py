@@ -39,7 +39,9 @@ def init_db():
             result TEXT,
             payout REAL,
             order_type TEXT,
-            interval INTEGER DEFAULT 5
+            interval INTEGER DEFAULT 5,
+            claimed INTEGER DEFAULT 0,
+            outcome_index INTEGER DEFAULT 0
         )
     ''')
     
@@ -49,6 +51,12 @@ def init_db():
     except: pass
     try:
         cursor.execute("ALTER TABLE trades ADD COLUMN interval INTEGER DEFAULT 5")
+    except: pass
+    try:
+        cursor.execute("ALTER TABLE trades ADD COLUMN claimed INTEGER DEFAULT 0")
+    except: pass
+    try:
+        cursor.execute("ALTER TABLE trades ADD COLUMN outcome_index INTEGER DEFAULT 0")
     except: pass
     
     conn.commit()
@@ -100,19 +108,34 @@ def get_last_n_candles(limit=10, market_id=None, interval=None):
 async def async_get_last_n_candles(limit=10, market_id=None, interval=None):
     return await asyncio.to_thread(get_last_n_candles, limit, market_id, interval)
 
-def save_trade(timestamp, market_id, direction, amount, result, payout, order_type="AUTO", interval=5):
+def save_trade(timestamp, market_id, direction, amount, result, payout, order_type="AUTO", interval=5, outcome_index=0):
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('''
-        INSERT INTO trades (timestamp, market_id, direction, amount, result, payout, order_type, interval)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (timestamp, market_id, direction, amount, result, payout, order_type, interval))
+        INSERT INTO trades (timestamp, market_id, direction, amount, result, payout, order_type, interval, claimed, outcome_index)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+    ''', (timestamp, market_id, direction, amount, result, payout, order_type, interval, outcome_index))
     conn.commit()
     conn.close()
     logging.info(f"Recorded {order_type} trade ({interval}m): {result} (${payout-amount if result=='WIN' else -amount})")
 
-async def async_save_trade(timestamp, market_id, direction, amount, result, payout, order_type="AUTO", interval=5):
-    return await asyncio.to_thread(save_trade, timestamp, market_id, direction, amount, result, payout, order_type, interval)
+async def async_save_trade(timestamp, market_id, direction, amount, result, payout, order_type="AUTO", interval=5, outcome_index=0):
+    return await asyncio.to_thread(save_trade, timestamp, market_id, direction, amount, result, payout, order_type, interval, outcome_index)
+
+def get_unclaimed_trades():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM trades WHERE result = 'WIN' AND claimed = 0")
+    rows = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+    return rows
+
+def mark_as_claimed(trade_id):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE trades SET claimed = 1 WHERE id = ?", (trade_id,))
+    conn.commit()
+    conn.close()
 
 def get_24h_stats(interval=None):
     now = int(time.time())

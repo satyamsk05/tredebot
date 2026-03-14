@@ -9,10 +9,10 @@ from dotenv import load_dotenv
 
 from app.db import async_get_last_n_candles, async_get_24h_stats
 from app.trading.trader import async_get_balance, async_get_virtual_balance, async_update_virtual_balance
-from app.api.btc_api import async_get_active_btc_market, async_get_last_trade_price, async_place_btc_bet
-from app.config import INTERVAL, INITIAL_BET_AMOUNT, TELEGRAM_TOKEN, DRY_RUN
+from app.api.polymarket_api import async_get_active_market, async_get_last_trade_price, async_place_bet
+from app.config import INTERVAL, INITIAL_BET_AMOUNT, TELEGRAM_TOKEN, DRY_RUN, COINS
 from app.trading.martingale import BET_SEQUENCE, Martingale
-from app.bot.strings import t, get_config, get_theme
+from app.bot.strings import t, get_config, get_theme, STRINGS
 
 from logging.handlers import RotatingFileHandler
 
@@ -32,39 +32,85 @@ logging.basicConfig(
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("apscheduler").setLevel(logging.WARNING)
 
+# Global Cache for Winnings (to show on Main Menu)
+_cached_unclaimed = 0.0
+
+def log_info(msg):
+    logging.info(f"UI INFO: {msg}")
+
+def log_error(msg):
+    logging.error(f"UI ERROR: {msg}")
+
+def log_activity(action, update: Update = None):
+    # Logs both to the main log and a streamlined activity file
+    user = update.effective_user.first_name if update and update.effective_user else "Unknown"
+    line = f"{time.strftime('%Y-%m-%d %H:%M:%S')} - {user}: {action}\n"
+    logging.info(f"ACTIVITY: {user} - {action}")
+    try:
+        with open("logs/telegram_activity.log", "a") as f:
+            f.write(line)
+    except Exception:
+        pass
+
+def save_chat_id(chat_id):
+    try:
+        with open("data/chat_id.txt", "w") as f:
+            f.write(str(chat_id))
+    except Exception:
+        pass
+
 def get_main_menu():
     paused = os.path.exists("pause.flag")
     btn_text = t("btn_start") if paused else t("btn_stop")
-    return ReplyKeyboardMarkup(
-        [
-            [btn_text],
-            [t("btn_status"), t("btn_balance")],
-            [t("btn_history"), t("btn_live")],
-            [t("btn_manual"), t("btn_settings")]
-        ],
-        resize_keyboard=True
-    )
+    
+    # 2 rows of standard buttons
+    rows = [
+        [btn_text],
+        [t("btn_status"), t("btn_balance")],
+        [t("btn_history"), t("btn_live")],
+        [t("btn_manual"), t("btn_settings")]
+    ]
+    
+    # Add Claim to 3rd row if we have winnings
+    global _cached_unclaimed
+    if _cached_unclaimed > 0:
+        rows.append([t("btn_claim")])
+        
+    return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
 def get_settings_menu():
-    config = {"btc_5m": True, "btc_15m": False}
+    buttons = [
+        [t("btn_multi_market")],
+        [t("btn_perf"), t("btn_reset")],
+        [t("btn_report"), t("btn_appearance")],
+        [t("btn_help"), t("btn_back")]
+    ]
+    return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
+
+def get_multi_market_menu():
+    config = {}
     if os.path.exists("data/market_config.json"):
         try:
             with open("data/market_config.json", "r") as f:
                 config = json.load(f)
         except: pass
     
-    m5 = "✅" if config.get("btc_5m") else "❌"
-    m15 = "✅" if config.get("btc_15m") else "❌"
+    # Build list of toggles for all coins (BTC, ETH, SOL) and TFs (5M, 15M)
+    buttons = []
+    current_row = []
     
-    return ReplyKeyboardMarkup(
-        [
-            [f"{m5} BTC 5M", f"{m15} BTC 15M"],
-            [t("btn_perf"), t("btn_reset")],
-            [t("btn_report"), t("btn_appearance")],
-            [t("btn_back")]
-        ],
-        resize_keyboard=True
-    )
+    for coin in COINS:
+        for tf in [5, 15]:
+            key = f"{coin.lower()}_{tf}m"
+            status = "✅" if config.get(key) else "❌"
+            current_row.append(f"{status} {coin} {tf}M")
+            if len(current_row) == 2:
+                buttons.append(current_row)
+                current_row = []
+    if current_row: buttons.append(current_row)
+    
+    buttons.append([t("btn_back_settings")])
+    return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
 def get_appearance_menu():
     config = get_config()
@@ -82,8 +128,8 @@ def get_appearance_menu():
 def get_manual_menu(tf=5):
     return ReplyKeyboardMarkup(
         [
-            [f"🟢 UP $5", f"🟢 UP $10"],
-            [f"🔴 DOWN $5", f"🔴 DOWN $10"],
+            [f"🟢 UP $1", f"🟢 UP $2", f"🟢 UP $5"],
+            [f"🔴 DOWN $1", f"🔴 DOWN $2", f"🔴 DOWN $5"],
             [f"🎯 {t('btn_custom')} UP", f"🎯 {t('btn_custom')} DOWN"],
             [f"⏱️ {t('btn_tf')}: {tf}M", t("btn_back")]
         ],
@@ -151,10 +197,36 @@ async def check_notifications(context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logging.error(f"Notification check error: {e}")
 
+    # --- ALSO: Refresh Winning Cache every 15s (approx) ---
+    if not hasattr(check_notifications, "_last_win_check"):
+        check_notifications._last_win_check = 0 # Forces immediate check on first run
+    
+    now = time.time()
+    if now - check_notifications._last_win_check >= 15 or check_notifications._last_win_check == 0:
+        check_notifications._last_win_check = now
+        try:
+            from app.api.polymarket_api import fetch_redeemable_positions_from_api
+            from app.config import FUNDER_ADDRESS, WALLET_ADDRESS
+            
+            # Scan both primary and legacy funder for a smooth transition
+            wallets = list(set(filter(None, [WALLET_ADDRESS, FUNDER_ADDRESS])))
+            total = 0.0
+            for w in wallets:
+                r = await fetch_redeemable_positions_from_api(w)
+                total += sum(p['payout'] for p in r)
+            
+            global _cached_unclaimed
+            _cached_unclaimed = total
+            if _cached_unclaimed > 0:
+                logging.info(f"Background check: Found ${total:.2f} winnings.")
+        except:
+            pass
+
 # ── Command Handlers ──
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     log_activity("/start", update)
+    log_info("TG Handler: /start hit")
     save_chat_id(update.effective_chat.id)
     
     welcome = t("welcome", 
@@ -164,44 +236,179 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(welcome, reply_markup=get_main_menu(), parse_mode="Markdown")
 
-async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    log_activity("Status", update)
+async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🏓 *PONG!* Bot is alive and well.", parse_mode="Markdown")
+
+async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    log_activity("Button: Balance", update)
+    log_info("TG Handler: balance hit")
     save_chat_id(update.effective_chat.id)
     
+    from app.api.polymarket_api import fetch_redeemable_positions_from_api
+    from app.config import WALLET_ADDRESS, FUNDER_ADDRESS
+    from app.trading.trader import async_get_balance, async_get_virtual_balance
+    
+    # 1. Fetch Balances
+    usdc_bal = await async_get_balance() 
+    virt = await async_get_virtual_balance()
+    
+    # 2. Scan both primary and legacy funder for winnings
+    wallets = list(set(filter(None, [WALLET_ADDRESS, FUNDER_ADDRESS])))
+    total_unclaimed = 0
+    all_redeemables = []
+    
+    for w in wallets:
+        try:
+            r = await fetch_redeemable_positions_from_api(w)
+            for p in r: p['wallet'] = w
+            all_redeemables.extend(r)
+        except: pass
+        
+    total_unclaimed = sum(p['payout'] for p in all_redeemables)
+
+    msg = f"{t('balance_header')}\n\n"
+    msg += f"🧪 Virtual Balance: *${virt}*\n"
+    msg += f"💸 USDC.e Balance: *${usdc_bal}*\n"
+    # Show funder info if different and has balance or winnings
+    if FUNDER_ADDRESS and FUNDER_ADDRESS.lower() != WALLET_ADDRESS.lower():
+        msg += f"💼 Legacy Funder: `{FUNDER_ADDRESS[:6]}...{FUNDER_ADDRESS[-4:]}`\n"
+        
+    msg += f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    
+    if total_unclaimed > 0:
+        msg += f"\n{t('pending_claims', amount=f'{total_unclaimed:.2f}')}\n"
+        msg += f"👉 Use *🎁 Claim Winnings* button."
+    else:
+        msg += "\n✅ All winnings claimed."
+
+    await update.message.reply_text(msg, parse_mode="Markdown")
+    
+    msg += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    
+    global _cached_unclaimed
+    _cached_unclaimed = total_unclaimed
+
+    # Consistent 2-column layout
+    buttons = [
+        [t("btn_status"), t("btn_balance")],
+        [t("btn_history"), t("btn_live")],
+        [t("btn_manual"), t("btn_settings")]
+    ]
+    
+    if total_unclaimed > 0:
+        # Move Claim to bottom row
+        buttons.append([t("btn_claim")])
+
+    logging.info("Sending balance response to user.")
+    await update.message.reply_text(
+        msg, 
+        reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True),
+        parse_mode="Markdown"
+    )
+
+async def claim_winnings(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    from app.api.polymarket_api import fetch_redeemable_positions_from_api
+    from app.trading.trader import async_redeem_winnings
+    from app.config import WALLET_ADDRESS, FUNDER_ADDRESS
+    from app.db import get_db_connection
+    
+    # Scan both primary and legacy funder (Transition Support)
+    wallets = list(set(filter(None, [WALLET_ADDRESS, FUNDER_ADDRESS])))
+    all_redeemables = []
+    
+    for w in wallets:
+        try:
+            r = await fetch_redeemable_positions_from_api(w)
+            for p in r: p['wallet'] = w
+            all_redeemables.extend(r)
+        except: pass
+    
+    if not all_redeemables:
+        await update.message.reply_text(t("msg_no_claims"))
+        return
+
+    total_usd = sum(p['payout'] for p in all_redeemables)
+    status_msg = await update.message.reply_text(f"⏳ *Claiming ${total_usd:.2f} USDC.e...*", parse_mode="Markdown")
+    
+    total_claimed = 0
+    success_count = 0
+    
+    for pos in all_redeemables:
+        cond_id = pos['condition_id']
+        idx = pos['outcome_index']
+        wallet = pos['wallet']
+        
+        logging.info(f"Claiming winnings for {wallet} (Market: {cond_id[:10]})...")
+        success = await async_redeem_winnings(cond_id, idx, wallet)
+        
+        if success:
+            total_claimed += pos['payout']
+            success_count += 1
+            try:
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                cursor.execute("UPDATE trades SET claimed = 1 WHERE market_id = ?", (cond_id,))
+                conn.commit()
+                conn.close()
+            except: pass
+        else:
+            logging.error(f"Redemption failed for market {cond_id}")
+
+    if success_count > 0:
+        await status_msg.edit_text(f"✅ *Redemption Successful!*\nTotal Claimed: ${total_claimed:.2f} USDC.e", parse_mode="Markdown")
+    else:
+        await status_msg.edit_text("❌ *Redemption Failed.*\nCheck terminal logs for details (likely gasmatic issues).", parse_mode="Markdown")
+            
+    if success_count > 0:
+        global _cached_unclaimed
+        _cached_unclaimed = 0 # Reset cache after claim
+        await status_msg.edit_text(t("msg_claim_done", amount=f"{total_claimed:.2f}"), parse_mode="Markdown")
+        if success_count < len(all_redeemables):
+            await update.message.reply_text("⚠️ Some redemptions failed. This usually happens if the account lacks native gas (MATIC) for the transaction.")
+    else:
+        await status_msg.edit_text("❌ Redemption failed. Check `logs/telegram_bot.log` for the exact error.")
+
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    log_activity("Button: Status", update)
+    log_info("TG Handler: status hit")
+    save_chat_id(update.effective_chat.id)
+    
+    # Initialize necessary components
+    mg = Martingale()
+    status_icon = "🛑 STOPPED" if os.path.exists("pause.flag") else "▶️ RUNNING"
+    
+    # Load current multi-market config
+    config = {}
+    if os.path.exists("data/market_config.json"):
+        try:
+            with open("data/market_config.json", "r") as f:
+                config = json.load(f)
+        except: pass
+
     now_ts = int(time.time())
     interval_sec = 5 * 60
     next_boundary = ((now_ts // interval_sec) * interval_sec) + interval_sec
     seconds_until_next = next_boundary - now_ts
     mins, secs = divmod(seconds_until_next, 60)
     
-    mg = Martingale()
-    
-    paused = os.path.exists("pause.flag")
-    status_icon = t("btn_stop") if not paused else t("btn_start")
-    
-    config = {"btc_5m": True, "btc_15m": False}
-    if os.path.exists("data/market_config.json"):
-        try:
-            with open("data/market_config.json", "r") as f:
-                config = json.load(f)
-        except: pass
-    
     msg = t("status_header") + "\n\n"
-    msg += f"📡 Status: {status_icon}\n"
+    msg += f"📡 Status: *{status_icon}*\n"
     msg += f"⏳ Next 5m: *{mins:02d}:{secs:02d}s*\n"
     msg += f"--------------------------\n"
 
-    if config.get("btc_5m"):
-        step5 = mg.get_step("BTC_5m")
-        bet5 = mg.get_bet("BTC_5m")
-        msg += f"📊 *BTC 5M*: Level {step5+1} | ${bet5}\n"
-    
-    if config.get("btc_15m"):
-        step15 = mg.get_step("BTC_15m")
-        bet15 = mg.get_bet("BTC_15m")
-        msg += f"📊 *BTC 15M*: Level {step15+1} | ${bet15}\n"
+    # Show all active timeframes from config
+    active_any = False
+    for m_id, enabled in config.items():
+        if enabled:
+            active_any = True
+            p = m_id.split("_")
+            c = p[0].upper()
+            i = p[1]
+            step = mg.get_step(f"{c}_{i}")
+            bet = mg.get_bet(f"{c}_{i}")
+            msg += f"📊 *{c} {i}*: Level {step+1} | ${bet}\n"
 
-    if not config.get("btc_5m") and not config.get("btc_15m"):
+    if not active_any:
         msg += "⚠️ *No active timeframes!*\n"
 
     msg += f"\n🧪 Mode: *{'SIMULATION' if DRY_RUN else 'LIVE'}*\n"
@@ -209,22 +416,10 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(msg, parse_mode="Markdown")
 
-async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    log_activity("Balance", update)
-    save_chat_id(update.effective_chat.id)
-    
-    usdc_bal = await async_get_balance()
-    v_bal = await async_get_virtual_balance()
-    msg = t("balance_header") + "\n\n"
-    msg += f"🧪 Virtual: *${v_bal:,.2f}*\n"
-    msg += f"--------------------------\n"
-    msg += f"💸 USDC: *${usdc_bal:,.2f}*\n"
-    msg += f"🏦 Chain: *Polygon (POS)*\n"
-    msg += f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-    await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     log_activity("History", update)
+    context.user_data["current_menu"] = "history"
     save_chat_id(update.effective_chat.id)
     
     tf = context.user_data.get("history_tf", 5)
@@ -304,23 +499,28 @@ async def reset_martingale(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_chat_id(update.effective_chat.id)
     
     mg = Martingale()
-    mg.win("BTC") # This resets step to 0 (L1)
+    # Reset all active markets
+    for coin in COINS:
+        for tf in [5, 15]:
+            mg.win(f"{coin}_{tf}m")
     
     msg = (
         "🔄 *MARTINGALE RESET*\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "✅ Level has been reset to *L1* ($3).\n"
-        "🚀 Next trade will start fresh."
+        "✅ All levels have been reset to *L1*.\n"
+        "🚀 Next trades will start fresh."
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def performance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     log_activity("Performance", update)
+    context.user_data["current_menu"] = "perf"
     save_chat_id(update.effective_chat.id)
     
     tf = context.user_data.get("perf_tf", 5)
+    coin = context.user_data.get("perf_coin", "BTC")
     mg = Martingale()
-    label = "BTC_5m" if tf == 5 else "BTC_15m"
+    label = f"{coin}_{tf}m"
     step = mg.get_step(label)
     bet = mg.get_bet(label)
     
@@ -356,10 +556,12 @@ async def toggle_perf_tf(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def live_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     log_activity("Live Price", update)
+    context.user_data["current_menu"] = "live"
     save_chat_id(update.effective_chat.id)
     
-    tf = context.user_data.get("live_price_tf", 5)
-    active = await async_get_active_btc_market(offset_minutes=0, interval=tf)
+    tf = context.user_data.get("live_price_tf", 15)
+    coin = context.user_data.get("live_price_coin", "SOL")
+    active = await async_get_active_market(coin=coin, offset_minutes=0, interval=tf)
     if not active:
         await update.message.reply_text(f"❌ No active {tf}m market found.")
         return
@@ -390,17 +592,24 @@ async def toggle_live_price_tf(update: Update, context: ContextTypes.DEFAULT_TYP
     await live_price(update, context)
 
 async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    log_activity("Settings", update)
+    log_activity("Button: Settings", update)
+    log_info("TG Handler: settings_command hit")
     save_chat_id(update.effective_chat.id)
     
     msg = t("settings_header") + "\n\n"
-    msg += f"🎯 Strategy: *BTC High Frequency*\n"
-    msg += f"⏱️ Window:   *{INTERVAL} Minutes*\n"
+    msg += f"🎯 Strategy: *High Frequency Multi-Asset*\n"
+    msg += f"⏱️ Window:   *Dynamic Multi-TF*\n"
     msg += f"🧪 State:    *{'SIMULATION' if DRY_RUN else 'LIVE'}*\n"
     msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
     msg += "Choose an option below 👇"
     
     await update.message.reply_text(msg, reply_markup=get_settings_menu(), parse_mode="Markdown")
+
+async def multi_market_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    log_activity("Button: Multi-Market", update)
+    log_info("TG Handler: multi_market_command hit")
+    save_chat_id(update.effective_chat.id)
+    await update.message.reply_text(t("multi_market_header"), reply_markup=get_multi_market_menu(), parse_mode="Markdown")
 
 async def appearance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     log_activity("Appearance", update)
@@ -460,26 +669,38 @@ async def handle_nick_change(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def toggle_market_keyboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text # e.g. "✅ BTC 5M"
-    m_id = "btc_15m" if "15M" in text else "btc_5m"
+    # Find which coin/tf was clicked
+    target_key = None
+    for coin in COINS:
+        for tf in [5, 15]:
+            if f"{coin} {tf}M" in text:
+                target_key = f"{coin.lower()}_{tf}m"
+                break
     
-    log_activity(f"Toggle {m_id}", update)
+    if not target_key:
+                return
     
-    config = {"btc_5m": True, "btc_15m": False}
-    if os.path.exists("data/market_config.json"):
+    log_activity(f"Toggle {target_key}", update)
+    
+    config = {}
+    MARKET_CONFIG_FILE = "data/market_config.json"
+    
+    if os.path.exists(MARKET_CONFIG_FILE):
         try:
-            with open("data/market_config.json", "r") as f:
+            with open(MARKET_CONFIG_FILE, "r") as f:
                 config = json.load(f)
         except: pass
     
-    config[m_id] = not config.get(m_id, False)
+    # Toggle
+    config[target_key] = not config.get(target_key, False)
     
-    with open("data/market_config.json", "w") as f:
-        json.dump(config, f)
+    with open(MARKET_CONFIG_FILE, "w") as f:
+        json.dump(config, f, indent=4)
     
-    status_label = "ENABLED" if config[m_id] else "DISABLED"
+    status_label = "ENABLED ✅" if config[target_key] else "DISABLED ❌"
     await update.message.reply_text(
-        f"⚙️ *{m_id.replace('_', ' ').upper()}* is now *{status_label}*",
-        reply_markup=get_settings_menu(),
+        f"⚙️ *{target_key.replace('_', ' ').upper()}* is now *{status_label}*",
+        reply_markup=get_multi_market_menu(),
         parse_mode="Markdown"
     )
 
@@ -496,7 +717,7 @@ async def daily_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         total = s["wins"] + s["losses"]
         wr = (s["wins"] / total * 100) if total > 0 else 0
         return (
-            f"📊 *BTC {tf}M STATS*\n"
+            f"📊 *{tf}M GLOBAL STATS*\n"
             f"✅ W: *{s['wins']}* | ❌ L: *{s['losses']}* | 🔥 WR: *{wr:.1f}%*\n"
             f"💰 Net: *{'+' if s['total_profit'] >=0 else ''}${s['total_profit']:.2f}*\n"
         )
@@ -538,13 +759,30 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ── Manual Trade (with custom amount) ──
 
+async def handle_tf_switch(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Consolidated handler to avoid overlapping btn_switch_to matches."""
+    menu = context.user_data.get("current_menu", "history")
+    if menu == "manual":
+        return await toggle_manual_tf(update, context)
+    elif menu == "history":
+        return await toggle_history_tf(update, context)
+    elif menu == "perf":
+        return await toggle_perf_tf(update, context)
+    elif menu == "live":
+        return await toggle_live_price_tf(update, context)
+    else:
+        # Default to history if unknown
+        return await toggle_history_tf(update, context)
+
 async def manual_trade(update: Update, context: ContextTypes.DEFAULT_TYPE):
     log_activity("Manual Trade", update)
+    context.user_data["current_menu"] = "manual"
     save_chat_id(update.effective_chat.id)
     
     tf = context.user_data.get("manual_tf", 5)
-    active = await async_get_active_btc_market(offset_minutes=0, interval=tf)
-    market_name = active['question'] if active else "Unknown Market"
+    coin = context.user_data.get("manual_coin", "BTC")
+    active = await async_get_active_market(coin=coin, interval=tf)
+    market_name = active['question'] if active else f"No {coin} {tf}M Market"
     
     msg = (
         "🎯 *MANUAL TRADE CENTER*\n"
@@ -562,7 +800,8 @@ async def toggle_manual_tf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     new_tf = 15 if current_tf == 5 else 5
     context.user_data["manual_tf"] = new_tf
     
-    active = await async_get_active_btc_market(offset_minutes=0, interval=new_tf)
+    coin = context.user_data.get("manual_coin", "BTC")
+    active = await async_get_active_market(coin=coin, interval=new_tf)
     market_name = active['question'] if active else "Unknown Market"
     
     msg = (
@@ -586,9 +825,10 @@ async def handle_fixed_manual_trade(update: Update, context: ContextTypes.DEFAUL
         return
 
     tf = context.user_data.get("manual_tf", 5)
-    active = await async_get_active_btc_market(offset_minutes=0, interval=tf)
+    coin = context.user_data.get("manual_coin", "BTC")
+    active = await async_get_active_market(coin=coin, interval=tf)
     if not active:
-        await update.message.reply_text(f"❌ No active {tf}m market found.")
+        await update.message.reply_text(f"❌ No active {coin} {tf}m market found.")
         return
     
     if direction_str == "up":
@@ -607,7 +847,8 @@ async def handle_fixed_manual_trade(update: Update, context: ContextTypes.DEFAUL
     
     msg_waiting = await update.message.reply_text(f"⏳ Placing *${amount}* on *{direction}*...", parse_mode="Markdown")
     
-    success = await async_place_btc_bet(token, amount)
+    coin = context.user_data.get("manual_coin", "BTC")
+    success = await async_place_bet(token, amount, coin=coin)
     
     if success:
         try:
@@ -648,7 +889,8 @@ async def handle_fixed_manual_trade(update: Update, context: ContextTypes.DEFAUL
         )
         await msg_waiting.edit_text(text=msg, parse_mode="Markdown")
     else:
-        await msg_waiting.edit_text(text="❌ Failed to place order. Check terminal logs.")
+        logging.error(f"Fixed manual trade failed for token {token} and amount {amount}")
+        await msg_waiting.edit_text(text=f"❌ Failed to place order (${amount}). Check terminal logs for detailed error.")
 
 async def handle_custom_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
@@ -688,18 +930,28 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
         # Update message
         def get_toggle(m): return "✅" if config.get(m) else "❌"
-        keyboard = [
-            [
-                InlineKeyboardButton(f"{get_toggle('btc_5m')} BTC 5m", callback_data="toggle_btc_5m"),
-                InlineKeyboardButton(f"{get_toggle('btc_15m')} BTC 15m", callback_data="toggle_btc_15m")
-            ]
-        ]
+        
+        keyboard = []
+        current_row = []
+        for coin in [c.upper() for c in COINS]:
+            for tf in [5, 15]:
+                key = f"{coin.lower()}_{tf}m"
+                current_row.append(InlineKeyboardButton(f"{get_toggle(key)} {coin} {tf}m", callback_data=f"toggle_{key}"))
+                if len(current_row) == 2:
+                    keyboard.append(current_row)
+                    current_row = []
+        if current_row: keyboard.append(current_row)
+
+        items_str = ""
+        for k, v in config.items():
+            if v:
+                items_str += f"• {k.replace('_', ' ').upper()}: *ENABLED*\n"
+        
         msg = (
             "⚙️ *MARKET CONFIGURATION*\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             "Enable or disable specific timeframes. The bot will trade all active ones simultaneously.\n\n"
-            f"• BTC 5m:  *{'ENABLED' if config.get('btc_5m') else 'DISABLED'}*\n"
-            f"• BTC 15m: *{'ENABLED' if config.get('btc_15m') else 'DISABLED'}*\n"
+            f"{items_str if items_str else '⚠️ No active markets!'}"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         )
         await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
@@ -722,7 +974,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     direction_str = parts[1]  # "up" or "down"
     amount = int(parts[2])
     
-    active = await async_get_active_btc_market(offset_minutes=0)
+    coin = context.user_data.get("manual_coin", "BTC")
+    active = await async_get_active_market(coin=coin, offset_minutes=0)
     if not active:
         await query.edit_message_text(text="❌ No active market found.")
         return
@@ -744,7 +997,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     log_activity(f"MT: {direction} ${amount}", update)
     await query.edit_message_text(text=f"⏳ Placing *${amount}* on *{direction}*...", parse_mode="Markdown")
     
-    success = await async_place_btc_bet(token, amount)
+    success = await async_place_bet(token, amount, coin=coin)
     
     if success:
         try:
@@ -786,7 +1039,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await query.edit_message_text(text=msg, parse_mode="Markdown")
     else:
-        await query.edit_message_text(text="❌ Failed to place order. Check terminal logs.")
+        logging.error(f"Manual trade failed for token {token} and amount {amount}")
+        await query.edit_message_text(text=f"❌ Failed to place order (${amount}). Check terminal logs for detailed error.")
 
 async def handle_custom_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
     amount_text = update.message.text
@@ -801,7 +1055,8 @@ async def handle_custom_amount(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text("❌ Invalid amount. Please enter a positive number (e.g. `5.5`):")
         return WAITING_FOR_AMOUNT
 
-    active = await async_get_active_btc_market(offset_minutes=0, interval=tf)
+    coin = context.user_data.get("manual_coin", "BTC")
+    active = await async_get_active_market(coin=coin, offset_minutes=0, interval=tf)
     if not active:
         await update.message.reply_text(f"❌ No active {tf}m market found.")
         return ConversationHandler.END
@@ -830,7 +1085,7 @@ async def handle_custom_amount(update: Update, context: ContextTypes.DEFAULT_TYP
 
     msg_waiting = await update.message.reply_text(f"⏳ Placing *${amount}* on *{direction}*...", parse_mode="Markdown")
     
-    success = await async_place_btc_bet(token, amount)
+    success = await async_place_bet(token, amount, coin=coin)
     
     if success:
         try:
@@ -888,12 +1143,21 @@ def run_telegram_bot():
     
     if os.path.exists("logs/telegram_activity.log"):
         os.remove("logs/telegram_activity.log")
+
+    # Dynamic language support helper
+    import re
+    def r(key):
+        patterns = []
+        for lang in STRINGS:
+            patterns.append(re.escape(STRINGS[lang].get(key, key)))
+        # Exact match from start to end of line to prevent overlapping
+        return f"(?i)^({'|'.join(patterns)})$"
     
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     
     # Conversation Handler for Manual Trades
     manual_conv = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex("^🎯 Custom (UP|DOWN)$"), handle_custom_start)],
+        entry_points=[MessageHandler(filters.Regex(r"^🎯 (Custom|कस्टम) (UP|DOWN)$"), handle_custom_start)],
         states={WAITING_FOR_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_custom_amount)]},
         fallbacks=[CommandHandler("cancel", cancel_custom)],
         per_message=False
@@ -902,7 +1166,7 @@ def run_telegram_bot():
 
     # Conversation Handler for Nickname
     nick_conv = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex(f"^.*{t('btn_nick')}$"), start_nick_change)],
+        entry_points=[MessageHandler(filters.Regex(r("btn_nick")), start_nick_change)],
         states={WAITING_FOR_NICKNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_nick_change)]},
         fallbacks=[MessageHandler(filters.Regex(f"^{t('btn_back')}$"), appearance_command)],
         per_message=False
@@ -912,14 +1176,9 @@ def run_telegram_bot():
     # Register other handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("reset", reset_martingale))
+    app.add_handler(CommandHandler("ping", ping))
     
     # Buttons with dynamic language support (Regex matching both EN/HI)
-    from app.bot.strings import STRINGS
-    def r(key):
-        patterns = []
-        for lang in STRINGS:
-            patterns.append(STRINGS[lang].get(key, key))
-        return f"^.*({'|'.join(patterns)}).*$"
 
     app.add_handler(MessageHandler(filters.Regex(r("btn_back")), back_to_main))
 
@@ -928,6 +1187,8 @@ def run_telegram_bot():
     app.add_handler(MessageHandler(filters.Regex(r("btn_history")), history))
     app.add_handler(MessageHandler(filters.Regex(r("btn_manual")), manual_trade))
     app.add_handler(MessageHandler(filters.Regex(r("btn_settings")), settings_command))
+    app.add_handler(MessageHandler(filters.Regex(r("btn_multi_market")), multi_market_command))
+    app.add_handler(MessageHandler(filters.Regex(r("btn_back_settings")), settings_command))
     app.add_handler(MessageHandler(filters.Regex(r("btn_perf")), performance))
     app.add_handler(MessageHandler(filters.Regex(r("btn_reset")), reset_martingale))
     app.add_handler(MessageHandler(filters.Regex(r("btn_report")), daily_report))
@@ -935,22 +1196,29 @@ def run_telegram_bot():
     app.add_handler(MessageHandler(filters.Regex(r("btn_lang")), toggle_language))
     app.add_handler(MessageHandler(filters.Regex(r("btn_theme")), toggle_theme))
     app.add_handler(MessageHandler(filters.Regex(r("btn_live")), live_price))
+    app.add_handler(MessageHandler(filters.Regex(r("btn_claim")), claim_winnings))
 
-    app.add_handler(MessageHandler(filters.Regex("^(🟢 UP|🔴 DOWN) \$[0-9]+$"), handle_fixed_manual_trade))
-    app.add_handler(MessageHandler(filters.Regex("^(▶️ START BOT|🛑 STOP BOT|▶️ बॉट शुरू करें|🛑 बॉट रोकें)$"), start_stop))
-    app.add_handler(MessageHandler(filters.Regex("^📉 Switch to (5|15)M Odds$"), toggle_live_price_tf))
-    app.add_handler(MessageHandler(filters.Regex("^(✅|❌) BTC (5M|15M)$"), toggle_market_keyboard))
-    app.add_handler(MessageHandler(filters.Regex("^⏱️ TF: (5|15)M$"), toggle_manual_tf))
-    app.add_handler(MessageHandler(filters.Regex("^📊 Switch to (5|15)M$"), toggle_history_tf))
-    app.add_handler(MessageHandler(filters.Regex("^🏆 Switch to (5|15)M$"), toggle_perf_tf))
-    app.add_handler(MessageHandler(filters.Regex("^🆘 Help$"), help_command))
+    app.add_handler(MessageHandler(filters.Regex(r"^(🟢 UP|🔴 DOWN) \$[0-9]+$"), handle_fixed_manual_trade))
+    app.add_handler(MessageHandler(filters.Regex(r("btn_start")), start_stop))
+    app.add_handler(MessageHandler(filters.Regex(r("btn_stop")), start_stop))
+    
+    # Consolidated TF switches
+    app.add_handler(MessageHandler(filters.Regex(r("btn_tf")), handle_tf_switch))
+    app.add_handler(MessageHandler(filters.Regex(r("btn_switch_to")), handle_tf_switch))
+    app.add_handler(MessageHandler(filters.Regex(r("btn_odds")), handle_tf_switch))
+    
+    # Toggle multi-market pairs
+    # Matches strings like "✅ BTC 5M" or "❌ ETH 15M"
+    app.add_handler(MessageHandler(filters.Regex(r"^(✅|❌)\s+(BTC|ETH|SOL|btc|eth|sol)\s+(5M|15M)$"), toggle_market_keyboard))
+    
+    app.add_handler(MessageHandler(filters.Regex(r("btn_help")), help_command))
     app.add_handler(CallbackQueryHandler(button_callback))
     
     # Schedule notification checker (every 5 seconds)
     app.job_queue.run_repeating(check_notifications, interval=5, first=2)
     
-    logging.info("Telegram Bot UI Started!")
-    app.run_polling()
+    logging.info(f"Telegram Bot UI Started! (PID: {os.getpid()})")
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     run_telegram_bot()
