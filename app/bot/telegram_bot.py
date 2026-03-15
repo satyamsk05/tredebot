@@ -266,24 +266,29 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     total_unclaimed = sum(p['payout'] for p in all_redeemables)
 
-    msg = f"{t('balance_header')}\n\n"
-    msg += f"🧪 Virtual Balance: *${virt}*\n"
-    msg += f"💸 USDC.e Balance: *${usdc_bal}*\n"
-    # Show funder info if different and has balance or winnings
+    msg = (
+        "╔══════════════════════════╗\n"
+        "║  💰  FINANCIAL OVERVIEW ║\n"
+        "╚══════════════════════════╝\n\n"
+        f"Virt   »  ${virt}\n"
+        f"USDC   »  ${usdc_bal}\n"
+    )
     if FUNDER_ADDRESS and FUNDER_ADDRESS.lower() != WALLET_ADDRESS.lower():
-        msg += f"💼 Legacy Funder: `{FUNDER_ADDRESS[:6]}...{FUNDER_ADDRESS[-4:]}`\n"
+        msg += f"Wallet »  {FUNDER_ADDRESS[:6]}...{FUNDER_ADDRESS[-4:]}\n"
+    else:
+        msg += f"Wallet »  {WALLET_ADDRESS[:6]}...{WALLET_ADDRESS[-4:]}\n"
         
-    msg += f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    msg += "\n——————————————————\n"
     
     if total_unclaimed > 0:
-        msg += f"\n{t('pending_claims', amount=f'{total_unclaimed:.2f}')}\n"
-        msg += f"👉 Use *🎁 Claim Winnings* button."
+        msg += f"Pending »  ${total_unclaimed:.2f}\n"
+        msg += "👉 Use *🎁 Claim Winnings* button."
     else:
-        msg += "\n✅ All winnings claimed."
-
-    await update.message.reply_text(msg, parse_mode="Markdown")
+        msg += "~ All winnings claimed ~\n"
     
-    msg += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    msg += "——————————————————"
+    
+    msg += "\n——————————————————"
     
     global _cached_unclaimed
     _cached_unclaimed = total_unclaimed
@@ -391,10 +396,15 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     seconds_until_next = next_boundary - now_ts
     mins, secs = divmod(seconds_until_next, 60)
     
-    msg = t("status_header") + "\n\n"
-    msg += f"📡 Status: *{status_icon}*\n"
-    msg += f"⏳ Next 5m: *{mins:02d}:{secs:02d}s*\n"
-    msg += f"--------------------------\n"
+    msg = (
+        "╔══════════════════════════╗\n"
+        f"║    🖥️  {t('nickname')} STATUS     ║\n"
+        "╚══════════════════════════╝\n\n"
+        f"Status »  {status_icon} {'▶️' if 'RUNNING' in status_icon else '🛑'}\n"
+        f"Mode   »  {'SIMULATION 🧪' if DRY_RUN else 'LIVE 💸'}\n"
+        f"Next5M »  {mins:02d}:{secs:02d}s\n\n"
+        "————————————————————————\n"
+    )
 
     # Show all active timeframes from config
     active_any = False
@@ -406,13 +416,12 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
             i = p[1]
             step = mg.get_step(f"{c}_{i}")
             bet = mg.get_bet(f"{c}_{i}")
-            msg += f"📊 *{c} {i}*: Level {step+1} | ${bet}\n"
+            msg += f"{c}{i.upper()} »  L{step+1} · ${bet}\n"
 
     if not active_any:
-        msg += "⚠️ *No active timeframes!*\n"
+        msg += "⚠️ No active timeframes!\n"
 
-    msg += f"\n🧪 Mode: *{'SIMULATION' if DRY_RUN else 'LIVE'}*\n"
-    msg += f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    msg += "—————————————————"
     
     await update.message.reply_text(msg, parse_mode="Markdown")
 
@@ -433,35 +442,27 @@ async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    msg = t("history_header", tf=tf) + "\n\n"
-    seen_ts = set()
-    filtered_closes = []
-    
-    for c in closes:
-        ts = c.get('timestamp')
-        if ts not in seen_ts:
-            seen_ts.add(ts)
-            filtered_closes.append(c)
-
+    msg = (
+        "╔══════════════════════════╗\n"
+        f"║    📊  {tf}M HISTORY LOG   ║\n"
+        "╚══════════════════════════╝\n\n"
+    )
     theme = get_theme()
-    for i, c in enumerate(reversed(filtered_closes)):
+    for i, c in enumerate(reversed(closes)):
         p = c['close_price']
         from datetime import datetime
         time_str = datetime.fromtimestamp(c['timestamp']).strftime('%H:%M')
-        time_display = f" 🕒 `{time_str}`"
             
-        icon = theme["up"] if p > 0.5 else theme["down"]
-        direction = "UP" if p > 0.5 else "DOWN"
-        msg += f"{icon} `#{i+1:02d}` | *{direction}* | `{p:.4f}`{time_display}\n"
+        direction = "UP  " if p > 0.5 else "DOWN"
+        msg += f" {i+1:02d} » {direction} » {p:.4f} » {time_str}\n"
     
-    msg += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    msg += "\n——————————————————"
     await update.message.reply_text(msg, reply_markup=get_history_keyboard(tf), parse_mode="Markdown")
 
 def get_history_keyboard(tf):
-    other_tf = 15 if tf == 5 else 5
     return ReplyKeyboardMarkup(
         [
-            [f"📊 {t('btn_switch_to')} {other_tf}M"],
+            [t("btn_history_5m"), t("btn_history_15m")],
             [t("btn_back")]
         ],
         resize_keyboard=True
@@ -505,10 +506,12 @@ async def reset_martingale(update: Update, context: ContextTypes.DEFAULT_TYPE):
             mg.win(f"{coin}_{tf}m")
     
     msg = (
-        "🔄 *MARTINGALE RESET*\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "✅ All levels have been reset to *L1*.\n"
-        "🚀 Next trades will start fresh."
+        "╔══════════════════════════╗\n"
+        "║   🔄  MARTINGALE RESET  ║\n"
+        "╚══════════════════════════╝\n\n"
+        "Reset  »  All levels → L1\n"
+        "Next   »  Fresh start 🚀\n\n"
+        "——————————————"
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
@@ -532,13 +535,16 @@ async def performance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             seq_display += f"${b}  "
     
-    msg = t("matrix_header", tf=tf) + "\n\n"
-    msg += f"📈 Position: *Level {step+1}*\n"
-    msg += f"💰 Risking: *${bet}*\n"
-    msg += f"--------------------------\n"
-    msg += "Strategy Sequence:\n"
-    msg += f"`{seq_display.replace('*', '')}`\n\n"
-    msg += f"Current: *{bet} USD*"
+    msg = (
+        "╔══════════════════════════╗\n"
+        f"║   🏆  MARTINGALE · {tf}M   ║\n"
+        "╚══════════════════════════╝\n\n"
+        f"Level  »  L{step+1}\n"
+        f"Bet    »  ${bet}\n\n"
+        f"Ladder »  {' · '.join([f'${b}' for b in BET_SEQUENCE[:4]])}\n"
+        f"          {' · '.join([f'${b}' for b in BET_SEQUENCE[4:]])}\n\n"
+        "—————————————"
+    )
     
     keyboard = ReplyKeyboardMarkup(
         [
@@ -569,16 +575,21 @@ async def live_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     yes_price = await async_get_last_trade_price(active['yes_token'])
     no_price = await async_get_last_trade_price(active['no_token'])
     
-    msg = t("odds_header", tf=tf) + "\n\n"
-    msg += f"📌 {active['question']}\n"
-    msg += f"--------------------------\n"
-    msg += f"🟢 YES (UP):   *{yes_price}*\n"
-    msg += f"🔴 NO (DOWN):  *{no_price}*\n"
-    msg += f"━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    msg = (
+        "╔══════════════════════════╗\n"
+        f"║   📉  {tf}M LIVE ODDS     ║\n"
+        "╚══════════════════════════╝\n\n"
+        f"Market »  {coin} Up or Down\n"
+        f"{active.get('question', '').split('Up or Down ')[-1]}\n\n"
+        f"YES ▲  »  {yes_price}\n"
+        f"NO  ▼  »  {no_price}\n\n"
+        "———————"
+    )
     
     keyboard = ReplyKeyboardMarkup(
         [
-            [f"📉 {t('btn_switch_to')} {'15' if tf==5 else '5'}M {t('btn_odds')}"],
+            [t("btn_odds_5m"), t("btn_odds_15m")],
+            [t("btn_refresh")],
             [t("btn_back")]
         ],
         resize_keyboard=True
@@ -588,7 +599,11 @@ async def live_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def toggle_live_price_tf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     log_activity("Toggle LP TF", update)
     text = update.message.text
-    context.user_data["live_price_tf"] = 15 if "15M" in text else 5
+    if "Refresh" in text or "रिफ्रेश" in text:
+        # Keep current TF
+        pass
+    else:
+        context.user_data["live_price_tf"] = 15 if "15M" in text else 5
     await live_price(update, context)
 
 async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -596,12 +611,15 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     log_info("TG Handler: settings_command hit")
     save_chat_id(update.effective_chat.id)
     
-    msg = t("settings_header") + "\n\n"
-    msg += f"🎯 Strategy: *High Frequency Multi-Asset*\n"
-    msg += f"⏱️ Window:   *Dynamic Multi-TF*\n"
-    msg += f"🧪 State:    *{'SIMULATION' if DRY_RUN else 'LIVE'}*\n"
-    msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-    msg += "Choose an option below 👇"
+    msg = (
+        "╔══════════════════════════╗\n"
+        f"║    🛠️  {t('nickname')} SETTINGS   ║\n"
+        "╚══════════════════════════╝\n\n"
+        f"Mode   »  {'SIMULATION 🧪' if DRY_RUN else 'LIVE 💸'}\n"
+        "Strat  »  High Freq Multi\n"
+        "Window »  Dynamic Multi-TF\n\n"
+        "————————————————"
+    )
     
     await update.message.reply_text(msg, reply_markup=get_settings_menu(), parse_mode="Markdown")
 
@@ -713,24 +731,28 @@ async def daily_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     stats5 = await async_get_24h_stats(interval=5)
     stats15 = await async_get_24h_stats(interval=15)
     
-    def format_tf(s, tf):
+    def format_tf_box(s, tf):
         total = s["wins"] + s["losses"]
         wr = (s["wins"] / total * 100) if total > 0 else 0
         return (
-            f"📊 *{tf}M GLOBAL STATS*\n"
-            f"✅ W: *{s['wins']}* | ❌ L: *{s['losses']}* | 🔥 WR: *{wr:.1f}%*\n"
-            f"💰 Net: *{'+' if s['total_profit'] >=0 else ''}${s['total_profit']:.2f}*\n"
+            f"〔 {tf}M 〕\n"
+            f"Wins   »  {s['wins']}\n"
+            f"Loss   »  {s['losses']}\n"
+            f"WR     »  {wr:.1f}%\n"
+            f"PnL    »  {'+' if s['total_profit'] >=0 else ''}${s['total_profit']:.2f}\n"
         )
 
-    msg = t("btn_report").upper() + "\n"
-    msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-    msg += f"{format_tf(stats5, 5)}"
-    msg += f"---------------------------\n"
-    msg += f"{format_tf(stats15, 15)}"
-    msg += f"━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-    msg += f"💰 *TOTAL PROFIT: ${stats5['total_profit'] + stats15['total_profit']:.2f}*\n"
-    msg += f"🌊 Total Volume: ${stats5['total_volume'] + stats15['total_volume']:.2f}\n"
-    msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    msg = (
+        "╔══════════════════════════╗\n"
+        "║     📊  DAILY REPORT    ║\n"
+        "╚══════════════════════════╝\n\n"
+        f"{format_tf_box(stats5, 5)}\n"
+        f"{format_tf_box(stats15, 15)}\n"
+        "————————————————————————\n"
+        f"Vol    »  ${stats5['total_volume'] + stats15['total_volume']:.2f}\n"
+        f"Total  »  ${stats5['total_profit'] + stats15['total_profit']:.2f}\n"
+        "——————————————————"
+    )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -785,11 +807,15 @@ async def manual_trade(update: Update, context: ContextTypes.DEFAULT_TYPE):
     market_name = active['question'] if active else f"No {coin} {tf}M Market"
     
     msg = (
-        "🎯 *MANUAL TRADE CENTER*\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"⏱️ Selected TF: *{tf}M*\n"
-        f"📌 Market: *{market_name}*\n\n"
-        "Select an amount to inject a trade instantly. 👇"
+        "╔══════════════════════════╗\n"
+        "║   🎯  MANUAL · TRADE     ║\n"
+        "╚══════════════════════════╝\n\n"
+        f"Time   »  {time.strftime('%H:%M:%S')}\n"
+        f"Market »  {coin} Up or Down\n"
+        f"{active.get('question', '').split('Up or Down ')[-1] if active else 'No market'}\n\n"
+        "——————————————————\n"
+        "Select an amount to inject 👇\n"
+        "——————————————————"
     )
     
     await update.message.reply_text(msg, reply_markup=get_manual_menu(tf), parse_mode="Markdown")
@@ -870,22 +896,18 @@ async def handle_fixed_manual_trade(update: Update, context: ContextTypes.DEFAUL
         exec_time = datetime.now().strftime('%H:%M:%S')
         
         msg = (
-            f"🎯 *Manual Trade Executed*\n"
-            "━━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"⏰ Time: *{exec_time}*\n"
-            f"--------------------------\n"
-            f"💰 Amount: *${amount}*\n"
-            f"--------------------------\n"
-            f"📊 Position: *{direction}*\n"
-            f"--------------------------\n"
-            f"🪙 Shares: *{shares:.2f}* (@ {buy_price:.2f})\n"
-            f"--------------------------\n"
-            f"⚙️ Order Type: *Manual*\n"
-            f"--------------------------\n"
-            f"📌 Market: *{active['question']}*\n"
-            f"--------------------------\n"
-            f"{'🧪 DRY RUN MODE' if DRY_RUN else '💸 LIVE ORDER PLACED'}\n"
-            f"{'No real funds used.' if DRY_RUN else 'Real funds dedicated.'}"
+            "╔══════════════════════════╗\n"
+            "║   🎯  MANUAL · TRADE     ║\n"
+            "╚══════════════════════════╝\n\n"
+            f"Time   »  {exec_time}\n"
+            f"Amt    »  ${amount}\n"
+            f"Side   »  {direction}\n"
+            f"Shares »  {shares:.2f} @ {buy_price:.2f}\n\n"
+            "——————————————————\n"
+            f"Market »  {active['question']}\n\n"
+            "——————————————————\n"
+            f"~ {'DRY RUN' if DRY_RUN else 'LIVE ORDER'} ~\n"
+            "——————————————————"
         )
         await msg_waiting.edit_text(text=msg, parse_mode="Markdown")
     else:
@@ -949,10 +971,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         msg = (
             "⚙️ *MARKET CONFIGURATION*\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "——————————————————\n\n"
             "Enable or disable specific timeframes. The bot will trade all active ones simultaneously.\n\n"
             f"{items_str if items_str else '⚠️ No active markets!'}"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            "——————————————————"
         )
         await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
         return
@@ -1020,22 +1042,18 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         exec_time = datetime.now().strftime('%H:%M:%S')
         
         msg = (
-            f"🎯 *Manual Trade Executed*\n"
-            "━━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"⏰ Time: *{exec_time}*\n"
-            f"--------------------------\n"
-            f"💰 Amount: *${amount}*\n"
-            f"--------------------------\n"
-            f"📊 Position: *{direction}*\n"
-            f"--------------------------\n"
-            f"🪙 Shares: *{shares:.2f}* (@ {buy_price:.2f})\n"
-            f"--------------------------\n"
-            f"⚙️ Order Type: *Manual*\n"
-            f"--------------------------\n"
-            f"📌 Market: *{active['question']}*\n"
-            f"--------------------------\n"
-            f"{'🧪 DRY RUN MODE' if DRY_RUN else '💸 LIVE ORDER PLACED'}\n"
-            f"{'No real funds used.' if DRY_RUN else 'Real funds dedicated.'}"
+            "╔══════════════════════════╗\n"
+            "║   🎯  MANUAL · TRADE     ║\n"
+            "╚══════════════════════════╝\n\n"
+            f"Time   »  {exec_time}\n"
+            f"Amt    »  ${amount}\n"
+            f"Side   »  {direction}\n"
+            f"Shares »  {shares:.2f} @ {buy_price:.2f}\n\n"
+            "——————————————————\n"
+            f"Market »  {active['question']}\n\n"
+            "——————————————————\n"
+            f"~ {'DRY RUN' if DRY_RUN else 'LIVE ORDER'} ~\n"
+            "——————————————————"
         )
         await query.edit_message_text(text=msg, parse_mode="Markdown")
     else:
@@ -1107,22 +1125,18 @@ async def handle_custom_amount(update: Update, context: ContextTypes.DEFAULT_TYP
         exec_time = datetime.now().strftime('%H:%M:%S')
         
         msg = (
-            f"🎯 *Custom Trade Executed*\n"
-            "━━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"⏰ Time: *{exec_time}*\n"
-            f"--------------------------\n"
-            f"💰 Amount: *${amount}*\n"
-            f"--------------------------\n"
-            f"📊 Position: *{direction}*\n"
-            f"--------------------------\n"
-            f"🪙 Shares: *{shares:.2f}* (@ {buy_price:.2f})\n"
-            f"--------------------------\n"
-            f"⚙️ Order Type: *Manual Custom*\n"
-            f"--------------------------\n"
-            f"📌 Market: *{active['question']}*\n"
-            f"--------------------------\n"
-            f"{'🧪 DRY RUN MODE' if DRY_RUN else '💸 LIVE ORDER PLACED'}\n"
-            f"{'No real funds used.' if DRY_RUN else 'Real funds dedicated.'}"
+            "╔══════════════════════════╗\n"
+            "║   🎯  MANUAL · TRADE     ║\n"
+            "╚══════════════════════════╝\n\n"
+            f"Time   »  {exec_time}\n"
+            f"Amt    »  ${amount}\n"
+            f"Side   »  {direction}\n"
+            f"Shares »  {shares:.2f} @ {buy_price:.2f}\n\n"
+            "——————————————————\n"
+            f"Market »  {active['question']}\n\n"
+            "——————————————————\n"
+            f"~ {'DRY RUN' if DRY_RUN else 'LIVE ORDER'} ~\n"
+            "——————————————————"
         )
         await msg_waiting.edit_text(text=msg, parse_mode="Markdown")
     else:
@@ -1206,6 +1220,11 @@ def run_telegram_bot():
     app.add_handler(MessageHandler(filters.Regex(r("btn_tf")), handle_tf_switch))
     app.add_handler(MessageHandler(filters.Regex(r("btn_switch_to")), handle_tf_switch))
     app.add_handler(MessageHandler(filters.Regex(r("btn_odds")), handle_tf_switch))
+    app.add_handler(MessageHandler(filters.Regex(r("btn_history_5m")), toggle_history_tf))
+    app.add_handler(MessageHandler(filters.Regex(r("btn_history_15m")), toggle_history_tf))
+    app.add_handler(MessageHandler(filters.Regex(r("btn_odds_5m")), toggle_live_price_tf))
+    app.add_handler(MessageHandler(filters.Regex(r("btn_odds_15m")), toggle_live_price_tf))
+    app.add_handler(MessageHandler(filters.Regex(r("btn_refresh")), toggle_live_price_tf))
     
     # Toggle multi-market pairs
     # Matches strings like "✅ BTC 5M" or "❌ ETH 15M"

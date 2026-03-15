@@ -118,16 +118,16 @@ def bot_loop():
     
     # Send startup notification to Telegram
     send_telegram_notify(
-        "📈 *NODE INITIALIZED*\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"⚡️ Strategy: *BTC 3-Streak Reversal*\n"
-        f"---------------------------\n"
-        f"💵 Base:   *${INITIAL_BET_AMOUNT}*\n"
-        f"⏱️ Window:  *Multi-TF Support (5m/15m)*\n"
-        f"🧪 Mode:    *{'SIMULATION' if DRY_RUN else 'LIVE'}*\n"
-        f"⛽ Gas:     *{matic_bal} MATIC*\n"
-        f"⏰ Heartbeat: *{datetime.now().strftime('%H:%M:%S')}*\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        "╔══════════════════════════╗\n"
+        "║   📈  NODE INITIALIZED  ║\n"
+        "╚══════════════════════════╝\n\n"
+        "Strat  »  BTC 3-Streak Reversal\n"
+        f"Base   »  ${INITIAL_BET_AMOUNT}\n"
+        "Window »  Multi-TF (5m/15m)\n"
+        f"Mode   »  {'SIMULATION 🧪' if DRY_RUN else 'LIVE 💸'}\n"
+        f"Gas    »  {matic_bal} MATIC\n"
+        f"Beat   »  {datetime.now().strftime('%H:%M:%S')}\n\n"
+        "———————————————————"
     )
     
     # Start Telegram Bot as a separate process
@@ -239,12 +239,13 @@ def bot_loop():
                                         )
                                         
                                         send_telegram_notify(
-                                            f"🏆 *WIN: {m_label}*\n"
-                                            f"━━━━━━━━━━━━━━━━━━\n"
-                                            f"💰 Payout: *+${payout:.2f}*\n"
-                                            f"📈 Close:  *{close_price}*\n"
-                                            f"🔄 Martingale Reset\n"
-                                            f"━━━━━━━━━━━━━━━━━━"
+                                            "╔══════════════════════════╗\n"
+                                            f"║   🏆  WIN · {m_label:<10}    ║\n"
+                                            "╚══════════════════════════╝\n\n"
+                                            f"Payout »  +${payout:.2f}\n"
+                                            f"Close  »  {close_price}\n"
+                                            "Reset  »  L1\n\n"
+                                            "————————————————"
                                         )
                                         trade_res = "WIN"
                                     else:
@@ -263,12 +264,13 @@ def bot_loop():
                                         )
                                         
                                         send_telegram_notify(
-                                            f"❌ *LOSS: {m_label}*\n"
-                                            f"━━━━━━━━━━━━━━━━━━\n"
-                                            f"📉 Loss:  *- ${bet_amount:.2f}*\n"
-                                            f"📈 Close: *{close_price}*\n"
-                                            f"⬆️ Next:  *L{mg.get_step(m_label)+1} (${mg.get_bet(m_label)})*\n"
-                                            f"━━━━━━━━━━━━━━━━━━"
+                                            "╔══════════════════════════╗\n"
+                                            f"║   ❌  LOSS · {m_label:<9}   ║\n"
+                                            "╚══════════════════════════╝\n\n"
+                                            f"Loss   »  -${bet_amount:.2f}\n"
+                                            f"Close  »  {close_price}\n"
+                                            f"Next   »  L{mg.get_step(m_label)+1} · ${mg.get_bet(m_label)}\n\n"
+                                            "——————————————————"
                                         )
                                         trade_res = "LOSS"
                                     state['pending_bet'] = None
@@ -326,13 +328,16 @@ def bot_loop():
                                                 
                                                 exec_time = datetime.now().strftime('%H:%M:%S')
                                                 send_telegram_notify(
-                                                    f"🎯 *Auto Trade: {m_label}*\n"
-                                                    f"━━━━━━━━━━━━━━━━━━\n"
-                                                    f"⏰ Time: *{exec_time}*\n"
-                                                    f"💰 Amt:  *${amount}*\n"
-                                                    f"📊 Side: *{trade_signal}*\n"
-                                                    f"📌 {next_market['question']}\n"
-                                                    f"━━━━━━━━━━━━━━━━━━"
+                                                    "╔══════════════════════════╗\n"
+                                                    f"║   🎯  AUTO · {m_label:<9}   ║\n"
+                                                    "╚══════════════════════════╝\n\n"
+                                                    f"Time   »  {exec_time}\n"
+                                                    f"Amt    »  ${amount}\n"
+                                                    f"Side   »  {trade_signal} {'▲' if trade_signal == 'YES' else '▼'}\n\n"
+                                                    "——————————————————\n"
+                                                    f"Market »  {m_coin} Up or Down\n"
+                                                    f"{next_market.get('question', '').split('Up or Down ')[-1]}\n"
+                                                    "————————————————————"
                                                 )
                         else:
                             log_error(f"[{m_label}] Failed to fetch market at boundary.")
@@ -405,11 +410,14 @@ def bot_loop():
                                 if success:
                                     log_success(f"Claim Successful: ${payout:.2f}")
                                     send_telegram_notify(
-                                        f"🎁 *AUTO-CLAIM SUCCESS*\n"
-                                        f"━━━━━━━━━━━━━━━━━━\n"
-                                        f"💰 Payout: *${payout:.2f} USDC.e*\n"
-                                        f"🏦 Wallet: `{wallet[:6]}...{wallet[-4:]}`\n"
-                                        f"━━━━━━━━━━━━━━━━━━"
+                                        "╔══════════════════════════╗\n"
+                                        "║  💰  FINANCIAL OVERVIEW ║\n"
+                                        "╚══════════════════════════╝\n\n"
+                                        f"Payout »  ${payout:.2f} USDC.e\n"
+                                        f"Wallet »  {wallet[:6]}...{wallet[-4:]}\n\n"
+                                        "———————————————————\n"
+                                        "~ Auto-claim processed ~\n"
+                                        "———————————————————"
                                     )
                                 else:
                                     log_error(f"Auto-Claim failed for {cond_id[:10]}. Will retry in 5m.")
