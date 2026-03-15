@@ -305,9 +305,20 @@ def bot_loop():
                                         if next_market:
                                             target_token = next_market['yes_token'] if trade_signal == "YES" else next_market['no_token']
                                             current_step = mg.get_step(m_label)
-                                            # L1 = Market Order (FOK), L2+ = Limit Order (GTC)
-                                            order_type = "FOK" if current_step == 0 else "GTC"
-                                            limit_price = 0.99 if order_type == "FOK" else 0.50
+                                            
+                                            # Custom User Logic: 
+                                            # L1 (Step 0): $3 Market Order (Price 0.99)
+                                            # L2 (Step 1): $6 Limit Order (Price 0.49)
+                                            if current_step == 0:
+                                                order_type = "FOK"
+                                                limit_price = 0.99
+                                            elif current_step == 1:
+                                                order_type = "GTC"
+                                                limit_price = 0.49
+                                            else:
+                                                # Fallback for future levels
+                                                order_type = "GTC"
+                                                limit_price = 0.50
                                             
                                             success = place_bet(target_token, amount, coin=m['coin'], price=limit_price, order_type=order_type)
                                             if success:

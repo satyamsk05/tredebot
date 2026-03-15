@@ -118,23 +118,39 @@ async def async_get_last_trade_price(token_id):
     except: return None
 
 def place_bet(token_id, amount, coin="BTC", price=0.99, order_type="GTC"):
-    """Synchronous weightlifter"""
+    """Synchronous order placement"""
     if DRY_RUN: return True
     try:
         client = get_clob_client()
-        logging.info(f"[{coin}] Placing market order: ${amount} for token {token_id}")
         
-        # Use MarketOrderArgs so the SDK handles precision and rounding
-        market_order_args = MarketOrderArgs(
-            token_id=token_id, 
-            amount=amount, 
-            side="BUY",
-            price=price # Use high price to ensure immediate market fill
-        )
-        signed_order = client.create_market_order(market_order_args)
+        # Determine if it's a "market" order (FOK with high price) or a true "limit" order
+        is_limit = price < 0.90
         
-        # Using GTC (Good Til Cancelled) instead of FOK for higher reliability
-        resp = client.post_order(signed_order, OrderType.GTC)
+        if not is_limit:
+            logging.info(f"[{coin}] Placing Market-Fill order: ${amount} for token {token_id}")
+            market_order_args = MarketOrderArgs(
+                token_id=token_id, 
+                amount=amount, 
+                side="BUY",
+                price=price
+            )
+            signed_order = client.create_market_order(market_order_args)
+            # Use FOK for market-like behavior if requested, otherwise GTC
+            actual_order_type = OrderType.FOK if order_type == "FOK" else OrderType.GTC
+            resp = client.post_order(signed_order, actual_order_type)
+        else:
+            logging.info(f"[{coin}] Placing Limit Order: ${amount} at ${price} for token {token_id}")
+            # Calculate size in base tokens
+            size = round(amount / price, 2)
+            order_args = OrderArgs(
+                token_id=token_id, 
+                price=price,
+                size=size,
+                side="BUY"
+            )
+            signed_order = client.create_order(order_args)
+            resp = client.post_order(signed_order, OrderType.GTC)
+            
         return resp and resp.get("success")
     except Exception as e:
         import traceback
