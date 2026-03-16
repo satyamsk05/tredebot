@@ -175,6 +175,11 @@ def bot_loop():
             now_ts = int(time.time())
             
             # Hot-Reload active markets from config
+            from dotenv import load_dotenv
+            load_dotenv(override=True)
+            e_5m = os.getenv("ENABLE_5M", "true").lower() == "true"
+            e_15m = os.getenv("ENABLE_15M", "true").lower() == "true"
+
             MARKET_CONFIG_FILE = "data/market_config.json"
             if os.path.exists(MARKET_CONFIG_FILE):
                 try:
@@ -194,8 +199,8 @@ def bot_loop():
                     if coin not in COINS: continue
                     
                     interval = int(parts[1].replace("m", ""))
-                    if interval == 5 and not ENABLE_5M: continue
-                    if interval == 15 and not ENABLE_15M: continue
+                    if interval == 5 and not e_5m: continue
+                    if interval == 15 and not e_15m: continue
                     
                     MARKETS.append({"id": key, "coin": coin, "interval": interval, "label": f"{coin}_{interval}m"})
             
