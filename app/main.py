@@ -100,7 +100,10 @@ def bot_loop():
         market_states[m['id']] = {
             "last_ts": 0,
             "pending_bet": None,
-            "startup_candles": 0
+            "startup_candles": 0,
+            "coin": m['coin'],
+            "interval": m['interval'],
+            "label": m['label']
         }
     
     # Initialize UI state (Default to first active market or SOL if possible)
