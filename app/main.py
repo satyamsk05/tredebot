@@ -196,11 +196,15 @@ def bot_loop():
                     interval = int(parts[1].replace("m", ""))
                     MARKETS.append({"id": key, "coin": coin, "interval": interval, "label": f"{coin}_{interval}m"})
             
-            # Update PRIMARY_MARKET_ID to the first enabled one
+            # Update PRIMARY_MARKET_ID and UI display
             if MARKETS:
                 PRIMARY_MARKET_ID = MARKETS[0]['id']
+                # Show all enabled TFs in the UI header
+                all_tfs = ", ".join([m['label'] for m in MARKETS])
+                ui.status_data["active_market"] = all_tfs
             else:
                 PRIMARY_MARKET_ID = None
+                ui.status_data["active_market"] = "None"
 
             for m in MARKETS:
                 m_id = m['id']
