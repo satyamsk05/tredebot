@@ -513,6 +513,18 @@ def bot_loop():
                     ui.status_data["balance"] = str(get_balance())
                     ui.status_data["virtual_balance"] = str(get_virtual_balance())
                     ui.status_data["matic_balance"] = str(get_matic_balance())
+                    
+                    # Live Price Updates
+                    if PRIMARY_MARKET_ID:
+                        # Find the token for the primary market to get prices
+                        m_coin = PRIMARY_MARKET_ID.split('_')[0]
+                        m_interval = int(PRIMARY_MARKET_ID.split('_')[1].replace('m', ''))
+                        curr_m = get_active_market(coin=m_coin, interval=m_interval)
+                        if curr_m:
+                            y_price = get_last_trade_price(curr_m['yes_token']) or 0.00
+                            ui.status_data["yes_price"] = f"{y_price:.2f}"
+                            ui.status_data["no_price"] = f"{(1.0 - y_price):.2f}"
+
                     # Refresh mode too
                     m_mode = "STD"
                     if os.path.exists("data/ui_config.json"):
