@@ -221,7 +221,10 @@ def bot_loop():
                     market_states[m_id] = {
                         "last_ts": 0,
                         "pending_bet": None,
-                        "startup_candles": 0
+                        "startup_candles": 0,
+                        "coin": m['coin'],
+                        "interval": m['interval'],
+                        "label": m['label']
                     }
                 
                 state = market_states[m_id]
