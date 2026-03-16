@@ -194,6 +194,9 @@ def bot_loop():
                     if coin not in COINS: continue
                     
                     interval = int(parts[1].replace("m", ""))
+                    if interval == 5 and not ENABLE_5M: continue
+                    if interval == 15 and not ENABLE_15M: continue
+                    
                     MARKETS.append({"id": key, "coin": coin, "interval": interval, "label": f"{coin}_{interval}m"})
             
             # Update PRIMARY_MARKET_ID and UI display
