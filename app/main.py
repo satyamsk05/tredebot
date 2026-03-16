@@ -357,56 +357,19 @@ def bot_loop():
                                     elif state['startup_candles'] < 3:
                                         log_warning(f"[{m_label}] Startup: Waiting for candles ({state['startup_candles']}/3)")
                                     else:
-                                        # Get market for the NEXT candle
+                                        # Set active signal for retry loop
                                         next_market = get_active_market(coin=m_coin, offset_minutes=0, interval=interval)
                                         if next_market:
-                                            target_token = next_market['yes_token'] if trade_signal == "YES" else next_market['no_token']
-                                            current_step = mg.get_step(m_label)
-                                            
-                                            # Custom User Logic: 
-                                            # L1 (Step 0): $3 Market Order (Price 0.99)
-                                            # L2 (Step 1): $6 Limit Order (Price 0.49)
-                                            if current_step == 0:
-                                                order_type = "FOK"
-                                                limit_price = 0.99
-                                            elif current_step == 1:
-                                                order_type = "GTC"
-                                                limit_price = 0.49
-                                            else:
-                                                # Fallback for future levels
-                                                order_type = "GTC"
-                                                limit_price = 0.50
-                                            
-                                            success = place_bet(target_token, amount, coin=m['coin'], price=limit_price, order_type=order_type)
-                                            if success:
-                                                update_virtual_balance(-amount)
-                                                actual_buy_price = get_last_trade_price(target_token) or 0.50
-                                                if order_type == "GTC":
-                                                    actual_buy_price = limit_price
-                                                
-                                                shares = amount / actual_buy_price
-                                                state['pending_bet'] = {
-                                                    "direction": trade_signal, 
-                                                    "timestamp": next_market['timestamp'], 
-                                                    "amount": amount,
-                                                    "shares": shares,
-                                                    "order_type": order_type
-                                                }
-                                                log_trade(f"[{m_label}] Placed ${amount} on {trade_signal}")
-                                                
-                                                exec_time = datetime.now().strftime('%H:%M:%S')
-                                                send_telegram_notify(
-                                                    "╔══════════════════════════╗\n"
-                                                    f"║   🎯  AUTO · {m_label:<9}   ║\n"
-                                                    "╚══════════════════════════╝\n\n"
-                                                    f"Time   »  {exec_time}\n"
-                                                    f"Amt    »  ${amount}\n"
-                                                    f"Side   »  {trade_signal} {'▲' if trade_signal == 'YES' else '▼'}\n\n"
-                                                    "——————————————————\n"
-                                                    f"Market »  {m_coin} Up or Down\n"
-                                                    f"{next_market.get('question', '').split('Up or Down ')[-1]}\n"
-                                                    "————————————————————"
-                                                )
+                                            state['active_signal'] = {
+                                                "direction": trade_signal,
+                                                "retry_until": now_ts + 30,
+                                                "amount": amount,
+                                                "timestamp": next_market['timestamp'],
+                                                "question": next_market.get('question', '')
+                                            }
+                                            log_info(f"[{m_label}] {trade_signal} Signal! Entry window open for 30s.")
+                                        else:
+                                            log_error(f"[{m_label}] Failed to fetch market for next candle.")
                         else:
                             log_error(f"[{m_label}] Failed to fetch market at boundary.")
                     except Exception as b_err:
@@ -451,6 +414,72 @@ def bot_loop():
             active_pending = any(s['pending_bet'] for s in market_states.values())
             if not active_pending:
                 ui.status_data["pending_trade"] = "None"
+
+            # RETRY EXECUTION LOOP (Automated trades)
+            for m_id, state in market_states.items():
+                if state.get('active_signal') and not state.get('pending_bet'):
+                    signal = state['active_signal']
+                    m_label = state['label']
+                    
+                    if now_ts <= signal['retry_until']:
+                        # Attempt placement
+                        # Re-fetch market to ensure we have the correct tokens
+                        m_coin = state['coin']
+                        interval = state['interval']
+                        
+                        m_next = get_active_market(coin=m_coin, offset_minutes=0, interval=interval)
+                        if m_next and m_next['timestamp'] == signal['timestamp']:
+                            target_token = m_next['yes_token'] if signal['direction'] == "YES" else m_next['no_token']
+                            
+                            # Determine order type and limit price based on martingale step
+                            current_step = mg.get_step(m_label)
+                            if current_step == 0:
+                                order_type = "FOK"
+                                limit_price = 0.99
+                            elif current_step == 1:
+                                order_type = "GTC"
+                                limit_price = 0.49
+                            else:
+                                order_type = "GTC"
+                                limit_price = 0.50
+
+                            log_info(f"[{m_label}] Attempting {signal['direction']} ({order_type})...")
+                            success = place_bet(target_token, signal['amount'], coin=m_coin, price=limit_price, order_type=order_type)
+                            
+                            if success:
+                                update_virtual_balance(-signal['amount'])
+                                actual_buy_price = get_last_trade_price(target_token) or 0.50
+                                if order_type == "GTC": actual_buy_price = limit_price
+                                
+                                shares = signal['amount'] / actual_buy_price
+                                state['pending_bet'] = {
+                                    "direction": signal['direction'],
+                                    "timestamp": signal['timestamp'],
+                                    "amount": signal['amount'],
+                                    "shares": shares,
+                                    "order_type": order_type
+                                }
+                                # Clear signal
+                                state['active_signal'] = None
+                                log_trade(f"[{m_label}] SUCCESS! Placed ${signal['amount']} on {signal['direction']}")
+                                
+                                # Notify Telegram
+                                exec_time = datetime.now().strftime('%H:%M:%S')
+                                send_telegram_notify(
+                                    "╔══════════════════════════╗\n"
+                                    f"║   🎯  AUTO · {m_label:<9}   ║\n"
+                                    "╚══════════════════════════╝\n\n"
+                                    f"Time   »  {exec_time}\n"
+                                    f"Amt    »  ${signal['amount']}\n"
+                                    f"Side   »  {signal['direction']} {'▲' if signal['direction'] == 'YES' else '▼'}\n\n"
+                                    "——————————————————\n"
+                                    f"Market »  {m_coin} Up or Down\n"
+                                    f"{signal['question'].split('Up or Down ')[-1]}\n"
+                                    "————————————————————"
+                                )
+                    else:
+                        log_warning(f"[{m_label}] Trade window EXPIRED (30s) for {signal['direction']}. No liquidity found.")
+                        state['active_signal'] = None
 
             # Update Metadata periodically
             if loop_count % 30 == 0:
