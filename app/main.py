@@ -369,7 +369,8 @@ def bot_loop():
                                                 "retry_until": now_ts + 30,
                                                 "amount": amount,
                                                 "timestamp": next_market['timestamp'],
-                                                "question": next_market.get('question', '')
+                                                "question": next_market.get('question', ''),
+                                                "notified_retry": False
                                             }
                                             log_info(f"[{m_label}] {trade_signal} Signal! Entry window open for 30s.")
                                         else:
@@ -481,8 +482,21 @@ def bot_loop():
                                     f"{signal['question'].split('Up or Down ')[-1]}\n"
                                     "————————————————————"
                                 )
+                            else:
+                                if not signal.get('notified_retry'):
+                                    signal['notified_retry'] = True
+                                    send_telegram_notify(
+                                        f"⚠️  {m_label} Entry Failed!\n"
+                                        f"Liquidity issues or rejection.\n"
+                                        f"🔄 Retrying for 30s..."
+                                    )
                     else:
                         log_warning(f"[{m_label}] Trade window EXPIRED (30s) for {signal['direction']}. No liquidity found.")
+                        send_telegram_notify(
+                            f"❌  {m_label} AUTO MISSED!\n"
+                            f"Window expired after 30s retries.\n"
+                            f"No entry found for {signal['direction']}."
+                        )
                         state['active_signal'] = None
 
             # Update Metadata periodically
