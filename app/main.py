@@ -3,6 +3,7 @@ import sys
 import os
 import json
 import logging
+import asyncio
 import subprocess
 import signal as sys_signal
 from datetime import datetime
@@ -17,6 +18,7 @@ from app.api.polymarket_api import get_active_market, get_last_trade_price, plac
 from app.trading.strategy import check_signal
 from app.trading.martingale import Martingale
 from app.trading.trader import get_balance, get_virtual_balance, update_virtual_balance, redeem_winnings, get_matic_balance, gasless_redeem
+from app.bot.telegram_bot import async_notify_fill
 
 # Configure logging to file only (Console is managed by SimpleLogger)
 logging.basicConfig(
@@ -107,6 +109,18 @@ def bot_loop():
     ui.status_data["active_market"] = first_m
     ui.status_data["martingale_step"] = mg.get_step(first_m)
     ui.status_data["bet_amount"] = mg.get_bet(first_m)
+    
+    # Load and show current martingale mode
+    m_mode = "STD"
+    if os.path.exists("data/ui_config.json"):
+        try:
+            with open("data/ui_config.json", "r") as f:
+                cfg = json.load(f)
+                if cfg.get("martingale_mode") == "test":
+                    m_mode = "TEST"
+        except: pass
+    ui.status_data["martingale_mode"] = m_mode
+    ui.status_data["pending_trade"] = "None"
 
     loop_count = 0
     last_redemption_check = 0
@@ -161,23 +175,42 @@ def bot_loop():
             now_ts = int(time.time())
             
             # Hot-Reload active markets from config
-            market_config = {} # Initialize empty, will be populated from file or default_config
             MARKET_CONFIG_FILE = "data/market_config.json"
-            try:
-                if os.path.exists(MARKET_CONFIG_FILE):
+            if os.path.exists(MARKET_CONFIG_FILE):
+                try:
                     with open(MARKET_CONFIG_FILE, "r") as f:
-                        saved_config = json.load(f)
-                    market_config.update(saved_config)
-                else:
-                    # Create initial config from .env
-                    with open(MARKET_CONFIG_FILE, "w") as f:
-                        json.dump(market_config, f)
-            except: pass
+                        market_config = json.load(f)
+                except: 
+                    market_config = {}
+            else:
+                market_config = {}
+
+            # Rebuild MARKETS list to respect hot-reloaded config
+            MARKETS = []
+            for key, enabled in market_config.items():
+                if enabled:
+                    parts = key.split("_")
+                    coin = parts[0].upper()
+                    if coin not in COINS: continue
+                    
+                    interval = int(parts[1].replace("m", ""))
+                    MARKETS.append({"id": key, "coin": coin, "interval": interval, "label": f"{coin}_{interval}m"})
+            
+            # Update PRIMARY_MARKET_ID to the first enabled one
+            if MARKETS:
+                PRIMARY_MARKET_ID = MARKETS[0]['id']
+            else:
+                PRIMARY_MARKET_ID = None
 
             for m in MARKETS:
                 m_id = m['id']
-                if not market_config.get(m_id, False):
-                    continue
+                # Market is already filtered by the rebuild above, but state needs initialization if new
+                if m_id not in market_states:
+                    market_states[m_id] = {
+                        "last_ts": 0,
+                        "pending_bet": None,
+                        "startup_candles": 0
+                    }
                 
                 state = market_states[m_id]
                 m_coin = m['coin']
@@ -215,13 +248,37 @@ def bot_loop():
                                 if pending and pending['timestamp'] == closed_market['timestamp']:
                                     dir_bet = pending['direction']
                                     bet_amount = pending.get('amount', mg.get_bet(m_label))
-                                    if (dir_bet == "YES" and close_price > 0.5) or (dir_bet == "NO" and close_price < 0.5):
+                                    limit_price = pending.get('buy_price', 0.50)
+                                    
+                                    # For limit orders: Did price cross the limit?
+                                    # (In simulation we use close_price as a proxy for 'ever hit')
+                                    is_fill = False
+                                    if dir_bet == "YES":
+                                        if close_price >= limit_price: is_fill = True
+                                    else:
+                                        if close_price <= (1.0 - limit_price): is_fill = True
+                                    
+                                    if is_fill:
                                         log_success(f"[{m_label}] Trade WON! ({dir_bet}, Price: {close_price})")
                                         mg.win(m_label)
                                         
-                                        shares = pending.get('shares', bet_amount / 0.50)
+                                        shares = pending.get('shares', bet_amount / limit_price)
                                         payout = shares * 1.0
                                         update_virtual_balance(payout)
+                                        
+                                        # New: Notify user on Fill
+                                        if pending.get('order_type') == "Manual Limit":
+                                            try:
+                                                asyncio.run(
+                                                    async_notify_fill(
+                                                        coin=m_label.split('_')[0],
+                                                        direction=dir_bet,
+                                                        amount=bet_amount,
+                                                        price=limit_price
+                                                    )
+                                                )
+                                            except Exception as ne:
+                                                log_error(f"Fill notification error: {ne}")
                                         
                                         # Outcome index for bitmask: YES = 1 (bit 0), NO = 2 (bit 1)
                                         outcome_idx = 1 if dir_bet == "YES" else 2
@@ -369,19 +426,31 @@ def bot_loop():
                 except Exception as e:
                     logging.error(f"Error handling Telegram activity: {e}")
 
-            # Sync Manual Bets (Adopt to 5m by default)
+            # Sync Manual Bets (Adopt to first enabled market)
             if os.path.exists("data/manual_bet.json"):
                 try:
                     with open("data/manual_bet.json", "r") as f:
                         manual_bet = json.load(f)
                     os.remove("data/manual_bet.json")
-                    # Adopt to first available market or specific btc_5m if exists
-                    m_key = 'btc_5m' if 'btc_5m' in market_states else (list(market_states.keys())[0] if market_states else None)
+                    
+                    # Find first enabled market to adopt the bet
+                    m_key = None
+                    if MARKETS:
+                        m_key = MARKETS[0]['id']
+                    
                     if m_key:
                         market_states[m_key]['pending_bet'] = manual_bet
-                        log_trade(f"Adopted Manual Bet for {m_key}: {manual_bet['direction']}")
-                except:
-                    pass
+                        ui.status_data["pending_trade"] = f"{manual_bet['direction']} ${manual_bet['amount']} @ {manual_bet['buy_price']}"
+                        log_trade(f"Adopted Manual Bet for {m_key}: {manual_bet['direction']} @ {manual_bet['buy_price']}")
+                    else:
+                        log_error("No active markets to adopt manual bet!")
+                except Exception as me:
+                    log_error(f"Manual bet adoption error: {me}")
+
+            # Clear pending display if no bets active
+            active_pending = any(s['pending_bet'] for s in market_states.values())
+            if not active_pending:
+                ui.status_data["pending_trade"] = "None"
 
             # Update Metadata periodically
             if loop_count % 30 == 0:
@@ -389,6 +458,16 @@ def bot_loop():
                     ui.status_data["balance"] = str(get_balance())
                     ui.status_data["virtual_balance"] = str(get_virtual_balance())
                     ui.status_data["matic_balance"] = str(get_matic_balance())
+                    # Refresh mode too
+                    m_mode = "STD"
+                    if os.path.exists("data/ui_config.json"):
+                        try:
+                            with open("data/ui_config.json", "r") as f:
+                                cfg = json.load(f)
+                                if cfg.get("martingale_mode") == "test":
+                                    m_mode = "TEST"
+                        except: pass
+                    ui.status_data["martingale_mode"] = m_mode
                 except Exception as p_err:
                     log_network_error("polling status", p_err)
 

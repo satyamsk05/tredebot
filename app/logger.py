@@ -33,6 +33,7 @@ class SimpleLogger:
             "matic_balance": "0.0000",
             "last_result": None,
             "last_dir": None,
+            "martingale_mode": "STD",
             "pid": os.getpid()
         }
         self.logs = []
@@ -83,7 +84,8 @@ class SimpleLogger:
         mkt = self.status_data['active_market']
         if vlen(mkt) > 45: mkt = mkt[:42] + "..."
         m_str = f"{W}MARKET: {W}{mkt}"
-        mg = f"{W}STEP: {C}L{int(self.status_data['martingale_step'])+1} {W}| BET: {C}${self.status_data['bet_amount']}"
+        m_mode = self.status_data.get("martingale_mode", "STD").upper()
+        mg = f"{W}MODE: {C}{m_mode} {W}| STEP: {C}L{int(self.status_data['martingale_step'])+1} {W}| BET: {C}${self.status_data['bet_amount']}"
         
         l2 = f"  {m_str}"
         l2 += " " * (self.width - vlen(l2) - vlen(mg) - 2)
@@ -97,6 +99,12 @@ class SimpleLogger:
         l3 += " " * (self.width - vlen(l3) - vlen(gas) - 2)
         l3 += f"{gas}  "
         frame.append(l3)
+
+        # Row 4: Pending Trades
+        pt = self.status_data.get("pending_trade", "None")
+        pt_str = f"{W}PENDING MANUAL: {Y}{pt}{W}"
+        l4 = f"  {pt_str}"
+        frame.append(l4)
         
         frame.append(f"{C}" + "─"*self.width + f"{W}")
         

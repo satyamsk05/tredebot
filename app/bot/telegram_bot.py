@@ -81,9 +81,9 @@ def get_main_menu():
 def get_settings_menu():
     buttons = [
         [t("btn_multi_market")],
-        [t("btn_perf"), t("btn_reset")],
-        [t("btn_report"), t("btn_appearance")],
-        [t("btn_help"), t("btn_back")]
+        [t("btn_perf"), t("btn_martingale")],
+        [t("btn_report"), t("btn_help")],
+        [t("btn_back")]
     ]
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
@@ -112,24 +112,12 @@ def get_multi_market_menu():
     buttons.append([t("btn_back_settings")])
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
-def get_appearance_menu():
-    config = get_config()
-    lang_flag = "🇮🇳" if config.get("language") == "hi" else "🇺🇸"
-    theme_icon = "⚡️" if config.get("theme") == "neon" else "📜"
-    
-    return ReplyKeyboardMarkup(
-        [
-            [f"{lang_flag} {t('btn_lang')}", f"{theme_icon} {t('btn_theme')}"],
-            [t("btn_nick"), t("btn_back")]
-        ],
-        resize_keyboard=True
-    )
 
 def get_manual_menu(tf=5):
     return ReplyKeyboardMarkup(
         [
-            [f"🟢 UP $1", f"🟢 UP $2", f"🟢 UP $5"],
-            [f"🔴 DOWN $1", f"🔴 DOWN $2", f"🔴 DOWN $5"],
+            [f"🟢 UP $2", f"🟢 UP $5"],
+            [f"🔴 DOWN $2", f"🔴 DOWN $5"],
             [f"🎯 {t('btn_custom')} UP", f"🎯 {t('btn_custom')} DOWN"],
             [f"⏱️ {t('btn_tf')}: {tf}M", t("btn_back")]
         ],
@@ -137,7 +125,8 @@ def get_manual_menu(tf=5):
     )
 
 WAITING_FOR_AMOUNT = 1
-WAITING_FOR_NICKNAME = 2
+WAITING_FOR_LIMIT = 3
+WAITING_FOR_CONFIRM = 4
 
 NOTIFY_FILE = "data/telegram_notify.json"
 CHAT_ID_FILE = "data/telegram_chat_id.txt"
@@ -229,9 +218,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     log_info("TG Handler: /start hit")
     save_chat_id(update.effective_chat.id)
     
+    config = get_config()
     welcome = t("welcome", 
         bet=INITIAL_BET_AMOUNT, 
-        mode='DRY RUN' if DRY_RUN else 'LIVE'
+        mode='DRY RUN' if DRY_RUN else 'LIVE',
+        nickname=config.get("nickname", "OGBOT").upper()
     )
     
     await update.message.reply_text(welcome, reply_markup=get_main_menu(), parse_mode="Markdown")
@@ -526,14 +517,7 @@ async def performance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     label = f"{coin}_{tf}m"
     step = mg.get_step(label)
     bet = mg.get_bet(label)
-    
-    # Build sequence display
-    seq_display = ""
-    for i, b in enumerate(BET_SEQUENCE):
-        if i == step:
-            seq_display += f"➡️ *${b}*  "
-        else:
-            seq_display += f"${b}  "
+    seq = mg._get_active_sequence()
     
     msg = (
         "╔══════════════════════════╗\n"
@@ -541,10 +525,11 @@ async def performance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "╚══════════════════════════╝\n\n"
         f"Level  »  L{step+1}\n"
         f"Bet    »  ${bet}\n\n"
-        f"Ladder »  {' · '.join([f'${b}' for b in BET_SEQUENCE[:4]])}\n"
-        f"          {' · '.join([f'${b}' for b in BET_SEQUENCE[4:]])}\n\n"
-        "—————————————"
+        f"Ladder »  {' · '.join([f'${b}' for b in seq[:4]])}\n"
     )
+    if len(seq) > 4:
+        msg += f"          {' · '.join([f'${b}' for b in seq[4:]])}\n"
+    msg += "\n—————————————"
     
     keyboard = ReplyKeyboardMarkup(
         [
@@ -629,37 +614,20 @@ async def multi_market_command(update: Update, context: ContextTypes.DEFAULT_TYP
     save_chat_id(update.effective_chat.id)
     await update.message.reply_text(t("multi_market_header"), reply_markup=get_multi_market_menu(), parse_mode="Markdown")
 
-async def appearance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    log_activity("Appearance", update)
-    await update.message.reply_text(
-        t("appearance_header"), 
-        reply_markup=get_appearance_menu(), 
-        parse_mode="Markdown"
-    )
-
-async def toggle_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    log_activity("Toggle Language", update)
+async def toggle_martingale_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    log_activity("Toggle Martingale Mode", update)
     config = get_config()
-    new_lang = "hi" if config.get("language") == "en" else "en"
-    config["language"] = new_lang
+    current = config.get("martingale_mode", "standard")
+    new_mode = "test" if current == "standard" else "standard"
+    config["martingale_mode"] = new_mode
     
     with open("data/ui_config.json", "w") as f:
         json.dump(config, f, indent=4)
         
-    await update.message.reply_text(t("msg_lang_changed"), reply_markup=get_appearance_menu(), parse_mode="Markdown")
-
-async def toggle_theme(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    log_activity("Toggle Theme", update)
-    config = get_config()
-    new_theme = "neon" if config.get("theme") == "classic" else "classic"
-    config["theme"] = new_theme
-    
-    with open("data/ui_config.json", "w") as f:
-        json.dump(config, f, indent=4)
-        
+    mode_label = t("mode_test") if new_mode == "test" else t("mode_standard")
     await update.message.reply_text(
-        t("msg_theme_changed", theme=new_theme.upper()), 
-        reply_markup=get_appearance_menu(), 
+        t("msg_martingale_changed", mode=mode_label),
+        reply_markup=get_settings_menu(),
         parse_mode="Markdown"
     )
 
@@ -801,6 +769,23 @@ async def manual_trade(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["current_menu"] = "manual"
     save_chat_id(update.effective_chat.id)
     
+    # Default TF to first enabled market if not set
+    if "manual_tf" not in context.user_data:
+        m_config = {}
+        if os.path.exists("data/market_config.json"):
+            try:
+                with open("data/market_config.json", "r") as f:
+                    m_config = json.load(f)
+            except: pass
+        for t_val in [5, 15]:
+            matched = False
+            for c in COINS:
+                if m_config.get(f"{c.lower()}_{t_val}m"):
+                    context.user_data["manual_tf"] = t_val
+                    matched = True
+                    break
+            if matched: break
+            
     tf = context.user_data.get("manual_tf", 5)
     coin = context.user_data.get("manual_coin", "BTC")
     active = await async_get_active_market(coin=coin, interval=tf)
@@ -920,8 +905,9 @@ async def handle_custom_start(update: Update, context: ContextTypes.DEFAULT_TYPE
     context.user_data["custom_direction"] = direction.lower()
     
     await update.message.reply_text(
-        text=f"🎯 *Custom {direction} Trade*\n\nReply with the amount you want to bet (e.g. `5.5` or `10`):",
-        parse_mode="Markdown"
+        text=t("msg_manual_amount"),
+        parse_mode="Markdown",
+        reply_markup=ReplyKeyboardMarkup([[t("btn_cancel_trade")]], resize_keyboard=True)
     )
     return WAITING_FOR_AMOUNT
 
@@ -1062,87 +1048,138 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_custom_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
     amount_text = update.message.text
-    direction_str = context.user_data.get("custom_direction", "up")
-    tf = context.user_data.get("manual_tf", 5)
-    
     try:
         amount = float(amount_text)
-        if amount <= 0:
-            raise ValueError()
+        if amount <= 0: raise ValueError()
+        context.user_data["custom_amount"] = amount
     except ValueError:
-        await update.message.reply_text("❌ Invalid amount. Please enter a positive number (e.g. `5.5`):")
+        await update.message.reply_text("❌ " + t("msg_invalid_price")) 
         return WAITING_FOR_AMOUNT
 
-    coin = context.user_data.get("manual_coin", "BTC")
-    active = await async_get_active_market(coin=coin, offset_minutes=0, interval=tf)
-    if not active:
-        await update.message.reply_text(f"❌ No active {tf}m market found.")
-        return ConversationHandler.END
-    
-    if direction_str == "up":
-        token = active['yes_token']
-        direction = "YES (UP)"
-        icon = "📈"
-    else:
-        token = active['no_token']
-        direction = "NO (DOWN)"
-        icon = "📉"
-    
-    buy_price = await async_get_last_trade_price(token)
-    if not buy_price or buy_price <= 0:
-        buy_price = 0.50
-    shares = amount / buy_price
-    
-    # Log activity
-    user = update.effective_user.first_name if update.effective_user else "User"
+    await update.message.reply_text(
+        text=t("msg_manual_limit"),
+        parse_mode="Markdown"
+    )
+    return WAITING_FOR_LIMIT
+
+async def handle_custom_limit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    limit_text = update.message.text
     try:
-        with open("logs/telegram_activity.log", "a") as f:
-            f.write(f"{user}: MT Custom {direction_str.upper()} ${amount}\n")
-    except Exception:
-        pass
+        limit = float(limit_text)
+        if not (0.01 <= limit <= 0.99): raise ValueError()
+        context.user_data["custom_limit"] = limit
+    except ValueError:
+        await update.message.reply_text(t("msg_invalid_price"))
+        return WAITING_FOR_LIMIT
 
-    msg_waiting = await update.message.reply_text(f"⏳ Placing *${amount}* on *{direction}*...", parse_mode="Markdown")
+    # Show confirmation
+    side = context.user_data["custom_direction"].upper()
+    amount = context.user_data["custom_amount"]
     
-    success = await async_place_bet(token, amount, coin=coin)
+    msg = t("msg_manual_confirm", side=side, amount=amount, price=limit)
     
-    if success:
-        try:
-            with open("data/manual_bet.json", "w") as f:
-                signal_dir = "YES" if direction_str == "up" else "NO"
-                json.dump({
-                    "direction": signal_dir, 
-                    "timestamp": active['timestamp'], 
-                    "amount": amount,
-                    "buy_price": buy_price,
-                    "shares": shares,
-                    "order_type": "Manual (Custom)"
-                }, f)
-            await async_update_virtual_balance(-amount)
-        except Exception as e:
-            logging.error(f"Failed to sync manual bet: {e}")
+    # Use Inline Keyboard for self-cleaning UI
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Confirm & Place", callback_data="manual_confirm")],
+        [InlineKeyboardButton("❌ Cancel", callback_data="manual_cancel")]
+    ])
+    
+    await update.message.reply_text(msg, reply_markup=keyboard, parse_mode="Markdown")
+    return WAITING_FOR_CONFIRM
 
-        from datetime import datetime
-        exec_time = datetime.now().strftime('%H:%M:%S')
+async def handle_trade_confirm_inline(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data == "manual_cancel":
+        await query.edit_message_text("❌ Trade Cancelled.", reply_markup=None)
+        return ConversationHandler.END
+
+    # Place trade
+    direction_str = context.user_data["custom_direction"]
+    amount = context.user_data["custom_amount"]
+    limit_price = context.user_data["custom_limit"]
+    tf = context.user_data.get("manual_tf", 5)
+    
+    coin = context.user_data.get("manual_coin", "BTC")
+    active = await async_get_active_market(coin=coin, interval=tf)
+    if not active:
+        await query.edit_message_text("❌ Market Expired.")
+        return ConversationHandler.END
         
-        msg = (
-            "╔══════════════════════════╗\n"
-            "║   🎯  MANUAL · TRADE     ║\n"
-            "╚══════════════════════════╝\n\n"
-            f"Time   »  {exec_time}\n"
-            f"Amt    »  ${amount}\n"
-            f"Side   »  {direction}\n"
-            f"Shares »  {shares:.2f} @ {buy_price:.2f}\n\n"
-            "——————————————————\n"
-            f"Market »  {active['question']}\n\n"
-            "——————————————————\n"
-            f"~ {'DRY RUN' if DRY_RUN else 'LIVE ORDER'} ~\n"
-            "——————————————————"
-        )
-        await msg_waiting.edit_text(text=msg, parse_mode="Markdown")
-    else:
-        await msg_waiting.edit_text(text="❌ Failed to place order. Check terminal logs.")
+    token = active['yes_token'] if direction_str == "up" else active['no_token']
     
+    await query.edit_message_text(f"⏳ Placing Manual Limit Order: *${amount}* @ *{limit_price}*...", parse_mode="Markdown")
+    
+    try:
+        success = await async_place_bet(token, amount, coin=coin, price=limit_price, order_type="GTC")
+        
+        if success:
+            # Sync to main processing
+            try:
+                with open("data/manual_bet.json", "w") as f:
+                    json.dump({
+                        "direction": "YES" if direction_str == "up" else "NO",
+                        "timestamp": active['timestamp'],
+                        "amount": amount,
+                        "buy_price": limit_price,
+                        "shares": amount / limit_price,
+                        "order_type": "Manual Limit"
+                    }, f, indent=4)
+                await async_update_virtual_balance(-amount)
+            except Exception as fe:
+                log_error(f"Manual bet file error: {fe}")
+
+            success_msg = (
+                "╔══════════════════════════╗\n"
+                "║   ✅  ORDER · PLACED     ║\n"
+                "╚══════════════════════════╝\n\n"
+                f"Amt    »  ${amount}\n"
+                f"Side   »  {direction_str.upper()}\n"
+                f"Limit  »  {limit_price}\n\n"
+                "——————————————————\n"
+                "Wait for candle boundary to process result or hit level.\n"
+                "——————————————————"
+            )
+            await query.edit_message_text(success_msg, parse_mode="Markdown")
+        else:
+            await query.edit_message_text("❌ Order Failed. Check keys or balance.")
+    except Exception as ee:
+        log_error(f"Manual placement error: {ee}")
+        await query.edit_message_text(f"❌ Error: {str(ee)[:50]}")
+        
     return ConversationHandler.END
+
+async def async_notify_fill(coin, direction, amount, price):
+    """Called from main.py when a manual limit order is filled"""
+    chat_id = None
+    if os.path.exists("data/chat_id.txt"):
+        try:
+            with open("data/chat_id.txt", "r") as f:
+                chat_id = f.read().strip()
+        except: pass
+    
+    if not chat_id: return
+    
+    from telegram import Bot
+    bot = Bot(token=TELEGRAM_TOKEN)
+    
+    msg = (
+        "╔══════════════════════════╗\n"
+        "║   🔔  LIMIT · FILLED     ║\n"
+        "╚══════════════════════════╝\n\n"
+        f"Asset  »  {coin}\n"
+        f"Amt    »  ${amount}\n"
+        f"Side   »  {direction}\n"
+        f"Price  »  {price}\n\n"
+        "——————————————————\n"
+        "Your manual limit order has been executed on the market.\n"
+        "——————————————————"
+    )
+    try:
+        await bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
+    except Exception as e:
+        logging.error(f"Failed to send fill notification: {e}")
 
 async def cancel_custom(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❌ Custom trade cancelled.", reply_markup=get_main_menu())
@@ -1164,28 +1201,24 @@ def run_telegram_bot():
         patterns = []
         for lang in STRINGS:
             patterns.append(re.escape(STRINGS[lang].get(key, key)))
-        # Exact match from start to end of line to prevent overlapping
-        return f"(?i)^({'|'.join(patterns)})$"
+        # Substring match (no anchors) to capture buttons with emojis/suffixes
+        return f"(?i)({'|'.join(patterns)})"
     
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     
     # Conversation Handler for Manual Trades
     manual_conv = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex(r"^🎯 (Custom|कस्टम) (UP|DOWN)$"), handle_custom_start)],
-        states={WAITING_FOR_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_custom_amount)]},
-        fallbacks=[CommandHandler("cancel", cancel_custom)],
+        states={
+            WAITING_FOR_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_custom_amount)],
+            WAITING_FOR_LIMIT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_custom_limit)],
+            WAITING_FOR_CONFIRM: [CallbackQueryHandler(handle_trade_confirm_inline)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel_custom), MessageHandler(filters.Regex(r("btn_cancel_trade")), cancel_custom)],
         per_message=False
     )
     app.add_handler(manual_conv)
 
-    # Conversation Handler for Nickname
-    nick_conv = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex(r("btn_nick")), start_nick_change)],
-        states={WAITING_FOR_NICKNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_nick_change)]},
-        fallbacks=[MessageHandler(filters.Regex(f"^{t('btn_back')}$"), appearance_command)],
-        per_message=False
-    )
-    app.add_handler(nick_conv)
     
     # Register other handlers
     app.add_handler(CommandHandler("start", start))
@@ -1206,9 +1239,7 @@ def run_telegram_bot():
     app.add_handler(MessageHandler(filters.Regex(r("btn_perf")), performance))
     app.add_handler(MessageHandler(filters.Regex(r("btn_reset")), reset_martingale))
     app.add_handler(MessageHandler(filters.Regex(r("btn_report")), daily_report))
-    app.add_handler(MessageHandler(filters.Regex(r("btn_appearance")), appearance_command))
-    app.add_handler(MessageHandler(filters.Regex(r("btn_lang")), toggle_language))
-    app.add_handler(MessageHandler(filters.Regex(r("btn_theme")), toggle_theme))
+    app.add_handler(MessageHandler(filters.Regex(r("btn_martingale")), toggle_martingale_mode))
     app.add_handler(MessageHandler(filters.Regex(r("btn_live")), live_price))
     app.add_handler(MessageHandler(filters.Regex(r("btn_claim")), claim_winnings))
 
@@ -1216,7 +1247,6 @@ def run_telegram_bot():
     app.add_handler(MessageHandler(filters.Regex(r("btn_start")), start_stop))
     app.add_handler(MessageHandler(filters.Regex(r("btn_stop")), start_stop))
     
-    # Consolidated TF switches
     app.add_handler(MessageHandler(filters.Regex(r("btn_tf")), handle_tf_switch))
     app.add_handler(MessageHandler(filters.Regex(r("btn_switch_to")), handle_tf_switch))
     app.add_handler(MessageHandler(filters.Regex(r("btn_odds")), handle_tf_switch))

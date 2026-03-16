@@ -30,9 +30,10 @@ DRY_RUN = os.getenv("DRY_RUN", "true").lower() == "true"
 INTERVAL = int(os.getenv("INTERVAL", "5"))
 INITIAL_BET_AMOUNT = int(os.getenv("INITIAL_BET_AMOUNT", "3"))
 VIRTUAL_BALANCE_START = float(os.getenv("VIRTUAL_BALANCE_START", "500.00"))
-COINS = os.getenv("COINS", "BTC,ETH,SOL").split(",")
-ENABLE_5M = os.getenv("ENABLE_5M", "false").lower() == "true"
-ENABLE_15M = os.getenv("ENABLE_15M", "false").lower() == "true" # Default off, we'll initialize SOL 15m separately
+# COINS = os.getenv("COINS", "BTC,ETH,SOL").split(",")
+COINS = ["SOL"]
+ENABLE_5M = os.getenv("ENABLE_5M", "true").lower() == "true"
+ENABLE_15M = os.getenv("ENABLE_15M", "true").lower() == "true"
 
 # Advanced / Hardcoded
 WS_URL = "wss://ws-live-data.polymarket.com"

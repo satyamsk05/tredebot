@@ -48,7 +48,17 @@ STRINGS = {
         "msg_lang_changed": "✅ Language changed to *English*",
         "msg_theme_changed": "🎭 Theme changed to *{theme}*",
         "msg_nick_changed": "✍️ Nickname updated to *{nickname}*",
-        "msg_enter_nick": "✍️ *Set Bot Nickname*\n\nReply with the new name for your bot:"
+        "msg_enter_nick": "✍️ *Set Bot Nickname*\n\nReply with the new name for your bot:",
+        "btn_martingale": "🎲 Martingale Mode",
+        "msg_martingale_changed": "🎲 Martingale mode changed to *{mode}*",
+        "mode_standard": "Standard (L5)",
+        "mode_test": "Test Mode ($1)",
+        "msg_manual_amount": "💰 *Manual Trade: Step 1*\n\nEnter the amount in USDC you want to bet:",
+        "msg_manual_limit": "🎯 *Manual Trade: Step 2*\n\nEnter the **Limit Price** (e.g. 0.45).\n_Min: 0.01 | Max: 0.99_",
+        "msg_manual_confirm": "📝 *Confirm Manual Trade*\n——————————————————\nSide   »  *{side}*\nAmt    »  *${amount}*\nLimit  »  *{price}*\n——————————————————\nConfirm with buttons below:",
+        "btn_confirm_trade": "✅ Confirm & Place",
+        "btn_cancel_trade": "❌ Cancel",
+        "msg_invalid_price": "⚠️ *Invalid Price!*\nPrice must be between 0.01 and 0.99. Try again:"
     },
     "hi": {
         "welcome": "📈 *{nickname} ट्रेडिंग हब*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n⚡️ *मल्टी-एसेट हाई फ्रीक्वेंसी अल्फा*\n---------------------------\n💵 शुरुआती दांव: *${bet}*\n⏱️ स्थिति: *{mode}*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━\nडैशबोर्ड तैयार है... 👇",
@@ -96,7 +106,17 @@ STRINGS = {
         "msg_lang_changed": "✅ भाषा बदलकर *हिंदी* कर दी गई है",
         "msg_theme_changed": "🎭 थीम बदलकर *{theme}* कर दी गई है",
         "msg_nick_changed": "✍️ उपनाम बदलकर *{nickname}* कर दिया गया है",
-        "msg_enter_nick": "✍️ *बॉट उपनाम सेट करें*\n\nअपने बॉट के लिए नया नाम लिखकर भेजें:"
+        "msg_enter_nick": "✍️ *बॉट उपनाम सेट करें*\n\nअपने बॉट के लिए नया नाम लिखकर भेजें:",
+        "btn_martingale": "🎲 मार्टिंगेल मोड",
+        "msg_martingale_changed": "🎲 मार्टिंगेल मोड बदलकर *{mode}* कर दिया गया है",
+        "mode_standard": "स्टैंडर्ड (L5)",
+        "mode_test": "टेस्ट मोड ($1)",
+        "msg_manual_amount": "💰 *मैनुअल ट्रेड: स्टेप 1*\n\nजितनी राशि (USDC) आप लगाना चाहते हैं, वह लिखें:",
+        "msg_manual_limit": "🎯 *मैनुअल ट्रेड: स्टेप 2*\n\n**लिमिट प्राइस** लिखें (जैसे 0.45)।\n_न्यूनतम: 0.01 | अधिकतम: 0.99_",
+        "msg_manual_confirm": "📝 *मैनुअल ट्रेड की पुष्टि करें*\n——————————————————\nसाइड   »  *{side}*\nराशि   »  *${amount}*\nलिमिट  »  *{price}*\n——————————————————\nनीचे दिए गए बटन से पुष्टि करें:",
+        "btn_confirm_trade": "✅ पुष्टि करें और ट्रेड लगाएं",
+        "btn_cancel_trade": "❌ रद्द करें",
+        "msg_invalid_price": "⚠️ *गलत प्राइस!*\nप्राइस 0.01 और 0.99 के बीच होना चाहिए। फिर से कोशिश करें:"
     }
 }
 
