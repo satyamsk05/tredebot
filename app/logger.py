@@ -34,7 +34,8 @@ class SimpleLogger:
             "last_result": None,
             "last_dir": None,
             "martingale_mode": "STD",
-            "pid": os.getpid()
+            "pid": os.getpid(),
+            "startup_status": "Ready"
         }
         self.logs = []
         self.max_logs = 8 
@@ -100,10 +101,17 @@ class SimpleLogger:
         l3 += f"{gas}  "
         frame.append(l3)
 
-        # Row 4: Pending Trades
+        # Row 4: Pending Trades & Startup
         pt = self.status_data.get("pending_trade", "None")
+        startup = self.status_data.get("startup_status", "Ready")
+        st_color = Y if "/3" in startup else G
+        
         pt_str = f"{W}PENDING MANUAL: {Y}{pt}{W}"
+        st_str = f"{W}STARTUP: {st_color}{startup}{W}"
+        
         l4 = f"  {pt_str}"
+        l4 += " " * (self.width - vlen(l4) - vlen(st_str) - 2)
+        l4 += f"{st_str}  "
         frame.append(l4)
         
         frame.append(f"{C}" + "─"*self.width + f"{W}")

@@ -235,6 +235,13 @@ def bot_loop():
                 if m_id == PRIMARY_MARKET_ID:
                     next_boundary = m_floor_ts + interval_sec
                     log_countdown(next_boundary - now_ts)
+                    
+                    # Update Startup Status display
+                    if state['startup_candles'] < 3:
+                        ui.status_data["startup_status"] = f"{state['startup_candles']}/3"
+                    else:
+                        ui.status_data["startup_status"] = "Ready"
+                        
                     ui.update()
 
                 if m_floor_ts > state['last_ts']:
