@@ -7,7 +7,7 @@ import time
 DB_PATH = "data/trading.db"
 
 def get_db_connection():
-    # os.makedirs(os.path.dirname(DB_PATH), exist_ok=True) # Removed as per user's edit
+    # conn = sqlite3.connect(DB_PATH)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
