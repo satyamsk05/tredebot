@@ -383,7 +383,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "━━━━━━━━━━━━━━━━━━━━"
     )
     
-    await update.message.reply_text(msg, parse_mode="Markdown")
+    await update.message.reply_text(msg, reply_markup=get_main_menu(), parse_mode="Markdown")
 
 
 async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -499,7 +499,14 @@ async def live_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "━━━━━━━━━━━━━━━━━━"
     )
     
-    await update.message.reply_text(msg, reply_markup=get_main_menu(), parse_mode="Markdown")
+    # Inline Refresh button directly on the message as requested (Kaam ki cheez)
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("🔄 Refresh Price", callback_data="refresh_live")
+    ]])
+    
+    await update.message.reply_text(msg, reply_markup=keyboard, parse_mode="Markdown")
+    # Also reset keyboard to main menu to ensure user isn't stuck
+    await update.message.reply_text("👇 Navigation", reply_markup=get_main_menu())
 
 
 async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -740,6 +747,39 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     data = query.data
     
+    if data == "refresh_live":
+        # Handle Inline Live Price Refresh
+        tf = 15
+        coin = "SOL"
+        active = await async_get_active_market(coin=coin, offset_minutes=0, interval=tf)
+        if not active:
+            await query.answer("❌ Market error", show_alert=True)
+            return
+
+        yes_price = await async_get_last_trade_price(active['yes_token'])
+        no_price = await async_get_last_trade_price(active['no_token'])
+        
+        msg = (
+            f"📉 *{tf}M LIVE ODDS*\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            f"📍 *Market:* {coin} Up/Down\n"
+            f"📅 {active.get('question', '').split('Up or Down ')[-1]}\n\n"
+            f"🟢 *YES ▲:* `{yes_price}`\n"
+            f"🔴 *NO  ▼:* `{no_price}`\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            f"_Updated: {time.strftime('%H:%M:%S')}_"
+        )
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("🔄 Refresh Price", callback_data="refresh_live")
+        ]])
+        
+        try:
+            await query.edit_message_text(msg, reply_markup=keyboard, parse_mode="Markdown")
+            await query.answer("✅ Updated!")
+        except:
+            await query.answer("Prices are already up to date.")
+        return
+
     if not data.startswith(("mt_", "toggle_")):
         return
     
