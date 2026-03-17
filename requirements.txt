@@ -1,5 +1,5 @@
 # 🤖 Polymarket Alpha Trade Bot - Dependencies
-# Optimize for Python 3.10+
+# Optimized for Python 3.10+
 
 # Bot Framework & Scheduler
 python-telegram-bot[job-queue]==21.0.1
@@ -13,5 +13,4 @@ httpx==0.27.0
 requests==2.31.0
 
 # UI & Utilities
-rich==13.7.1
 python-dotenv==1.0.1
