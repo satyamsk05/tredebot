@@ -1,6 +1,6 @@
-# 🤖 Polymarket Alpha Trade Bot v5.0 (Multi-Market)
-
-A high-performance, automated multi-market trading bot for Polymarket. Optimized for **SOL, ETH, and BTC** 5m/15m markets. Featuring a premium real-time Terminal UI and a full-featured Telegram Remote Control.
+# 🤖 OG BOTS: Polymarket Alpha v5.1
+---
+A high-performance, automated trading bot for Polymarket. Optimized for **SOL 15m** Reversal strategy. Featuring a premium real-time Terminal UI, **Smart Catch-up** logic, and an **Inline Remote Control** via Telegram.
 
 ---
 
@@ -17,16 +17,19 @@ A high-performance, automated multi-market trading bot for Polymarket. Optimized
 - **Auto-Sync:** Real-time countdown to the next candle closure across all active sessions.
 
 ### 🤖 Smart Trading Strategy
-- **Generalized Martingale:** Individual Martingale tracking for every asset/timeframe pair.
-- **Polymarket Native API:** 100% accurate market resolution using direct Gamma API data.
-- **Auto-Claim System:** Automatically redeems winning positions every 5 minutes to keep your balance liquid.
-- **Simulation Mode:** Built-in `DRY_RUN` mode for risk-free strategy testing.
+- **Smart Catch-up Logic**: Automatically detects and executes missed signals if resumed within 5 minutes of a candle start.
+- **Reversal Streak Alpha**: Advanced signal checking for trend reversals (3-streak pattern).
+- **Generalized Martingale**: Fixed recovery sequence ($3, $6, $13, $28, $60) to stay in the game.
+- **Polymarket Native API**: 100% accurate market resolution using direct Gamma API data.
+- **Auto-Claim System**: Automatically redeems winning positions every 5 minutes to keep your balance liquid.
+- **Simulation Mode**: Built-in `DRY_RUN` mode for risk-free strategy testing.
 
-### 📱 Telegram Remote Control v2
-- **Unified Command Center:** Start/Stop the entire node or individually toggle markets in the Settings menu.
-- **Context-Aware Toggles:** Seamlessly switch between BTC, ETH, and SOL views for Status, History, and Performance.
-- **Manual Injection:** Place trades manually for any active asset with structured amounts or custom sizes.
-- **Global Reports:** 24-hour PnL analysis summarizing performance across all traded assets.
+### 📱 Telegram Remote OG Control
+- **Inline Refresh**: Real-time "🔄 Refresh Price" buttons directly on price messages.
+- **Premium Layout**: Optimized 3-column main menu for fast one-tap navigation.
+- **Auto-Fill Notifications**: Instant alerts when manual or auto limit orders are filled.
+- **Consolidated Settings**: All secondary tools (Help, Daily Report) neatly organized in a clean sub-menu.
+- **Context-Aware Toggles**: Seamlessly switch views for Status, History, and Performance.
 
 ---
 
