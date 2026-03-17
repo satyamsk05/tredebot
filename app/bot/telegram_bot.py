@@ -14,6 +14,9 @@ from app.config import INTERVAL, INITIAL_BET_AMOUNT, TELEGRAM_TOKEN, DRY_RUN, CO
 from app.trading.martingale import BET_SEQUENCE, Martingale
 from app.bot.strings import t, get_config, get_theme, STRINGS
 
+# Ensure logs directory exists
+os.makedirs("logs", exist_ok=True)
+
 from logging.handlers import RotatingFileHandler
 
 logging.basicConfig(

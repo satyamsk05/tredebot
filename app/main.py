@@ -20,6 +20,10 @@ from app.trading.martingale import Martingale
 from app.trading.trader import get_balance, get_virtual_balance, update_virtual_balance, redeem_winnings, get_matic_balance, gasless_redeem
 from app.bot.telegram_bot import async_notify_fill
 
+# Ensure necessary directories exist
+os.makedirs("logs", exist_ok=True)
+os.makedirs("data", exist_ok=True)
+
 # Configure logging to file only (Console is managed by SimpleLogger)
 logging.basicConfig(
     level=logging.INFO,
