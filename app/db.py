@@ -95,7 +95,7 @@ def get_last_n_candles(limit=10, market_id=None, interval=None):
     else:
         cursor.execute('''
             SELECT timestamp, close_price, interval FROM candles
-            ORDER BY timestamp DESC
+            WHERE timestamp DESC
             LIMIT ?
         ''', (limit,))
     rows = cursor.fetchall()
