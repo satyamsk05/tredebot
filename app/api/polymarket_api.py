@@ -128,18 +128,11 @@ def place_bet(token_id, amount, coin="BTC", price=0.99, order_type="GTC"):
         
         if not is_limit:
             logging.info(f"[{coin}] Placing Market-Fill order: ${amount} for token {token_id}")
-            market_order_args = MarketOrderArgs(
-                token_id=token_id, 
-                amount=amount, 
-                side="BUY",
-                price=price
-            )
-            signed_order = client.create_market_order(market_order_args)
             # Use FOK for market-like behavior if requested, otherwise GTC
             actual_order_type = OrderType.FOK if order_type == "FOK" else OrderType.GTC
-            resp = client.post_order(signed_order, actual_order_type)
+            resp = client.post_order(signed_order, actual_order_type, post_only=is_limit) # Pro Logic: Post-Only for Limit orders
         else:
-            logging.info(f"[{coin}] Placing Limit Order: ${amount} at ${price} for token {token_id}")
+            logging.info(f"[{coin}] Placing Limit Order (Post-Only): ${amount} at ${price} for token {token_id}")
             # Calculate size in base tokens
             size = round(amount / price, 2)
             order_args = OrderArgs(
@@ -149,7 +142,7 @@ def place_bet(token_id, amount, coin="BTC", price=0.99, order_type="GTC"):
                 side="BUY"
             )
             signed_order = client.create_order(order_args)
-            resp = client.post_order(signed_order, OrderType.GTC)
+            resp = client.post_order(signed_order, OrderType.GTC, post_only=True) # Maker Rebate active!
             
         return resp and resp.get("success")
     except Exception as e:
@@ -236,3 +229,26 @@ async def fetch_redeemable_positions_from_api(wallet_address):
     except Exception as e:
         logging.error(f"Error fetching redeemable positions: {e}")
     return []
+
+def send_heartbeat(heartbeat_id="og-bot-v5.2"):
+    """
+    Sends a heartbeat to Polymarket to activate the 'Cancel on Disconnect' safety switch.
+    Requires SDK v0.34.0+
+    """
+    if DRY_RUN: return True
+    try:
+        client = get_clob_client()
+        resp = client.post_heartbeat(heartbeat_id)
+        if resp.get("ok"):
+            # logging.debug(f"[HEARTBEAT] Signal sent: {heartbeat_id}")
+            return True
+        else:
+            logging.error(f"[HEARTBEAT] Failed: {resp}")
+            return False
+    except Exception as e:
+        logging.error(f"[HEARTBEAT] Error: {e}")
+        return False
+
+async def async_send_heartbeat(heartbeat_id="og-bot-v5.2"):
+    """Offloads to thread"""
+    return await asyncio.to_thread(send_heartbeat, heartbeat_id)

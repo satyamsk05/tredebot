@@ -14,7 +14,7 @@ from app.config import (
 )
 from app.logger import ui, log_info, log_success, log_warning, log_error, log_trade, log_countdown, log_telegram, log_status, print_summary, print_result_banner, log_network_error
 from app.db import save_candle, get_last_n_candles, save_trade
-from app.api.polymarket_api import get_active_market, get_last_trade_price, place_bet, fetch_redeemable_positions
+from app.api.polymarket_api import get_active_market, get_last_trade_price, place_bet, fetch_redeemable_positions, async_send_heartbeat
 from app.trading.strategy import check_signal
 from app.trading.martingale import Martingale
 from app.trading.trader import get_balance, get_virtual_balance, update_virtual_balance, redeem_winnings, get_matic_balance, gasless_redeem
@@ -90,6 +90,7 @@ def bot_loop():
 
     loop_count = 0
     last_redemption_check = 0
+    last_heartbeat = 0
     
     matic_bal = get_matic_balance()
     log_info(f"System Initialized. Signer MATIC Balance: {matic_bal} MATIC")
@@ -498,7 +499,17 @@ def bot_loop():
                 except Exception as p_err:
                     log_network_error("polling status", p_err)
 
-            # --- 3. AUTO REDEMPTION (~5 Minutes) ---
+            # --- 3. PRO LOGIC: HEARTBEAT (Every 7s) ---
+            # Activates 'Cancel on Disconnect' safety switch (SDK v0.34.0+)
+            if now_ts - last_heartbeat >= 7:
+                last_heartbeat = now_ts
+                try:
+                    # Run async heartbeat in background thread
+                    asyncio.run(async_send_heartbeat())
+                except Exception as h_err:
+                    logging.error(f"[HEARTBEAT] Task failed: {h_err}")
+
+            # --- 4. AUTO REDEMPTION (~5 Minutes) ---
             if now_ts - last_redemption_check >= 300:
                 last_redemption_check = now_ts
                 log_info("Running background Auto-Redemption check...")
