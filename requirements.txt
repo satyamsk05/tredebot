@@ -1,16 +1,16 @@
-# 🤖 Polymarket Alpha Trade Bot - Dependencies
-# Optimized for Python 3.10+
+# 🤖 OG BOTS - Optimized Dependencies
+# Flexible versions to prevent environment conflicts
 
 # Bot Framework & Scheduler
-python-telegram-bot[job-queue]==21.0.1
-apscheduler==3.10.4
+python-telegram-bot[job-queue]>=21.0
+apscheduler>=3.10.4
 
 # Polymarket API & Blockchain Integration
-py-clob-client==1.5.0
-web3==6.15.1
-eth-account==0.11.0
-httpx==0.27.0
-requests==2.31.0
+py-clob-client>=0.34.0
+web3>=6.0.0
+eth-account>=0.11.0
+httpx>=0.27.0
+requests>=2.31.0
 
 # UI & Utilities
-python-dotenv==1.0.1
+python-dotenv>=1.0.1
