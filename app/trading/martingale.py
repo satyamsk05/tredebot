@@ -2,10 +2,8 @@ import json
 import os
 import logging
 
-# New L5 Sequence as requested: 3-6-13-28-60
+# Strict Martingale Sequence: 3-6-13-28-60
 BET_SEQUENCE = [3, 6, 13, 28, 60]
-# New Test/Verification Sequence: 1-1-1-1-1
-TEST_SEQUENCE = [1, 1, 1, 1, 1]
 
 CONFIG_FILE = "data/ui_config.json"
 
@@ -14,14 +12,7 @@ class Martingale:
         self.state_file = "data/martingale_state.json"
         
     def _get_active_sequence(self):
-        """Loads the active sequence from config."""
-        if os.path.exists(CONFIG_FILE):
-            try:
-                with open(CONFIG_FILE, "r") as f:
-                    config = json.load(f)
-                    if config.get("martingale_mode") == "test":
-                        return TEST_SEQUENCE
-            except: pass
+        """Returns the fixed bet sequence."""
         return BET_SEQUENCE
 
     def _load(self, coin):

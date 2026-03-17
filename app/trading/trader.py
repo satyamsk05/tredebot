@@ -403,18 +403,3 @@ def gasless_redeem(condition_id, outcome_bitmask, wallet_address):
 
 async def async_gasless_redeem(condition_id, outcome_index, wallet_address):
     return await asyncio.to_thread(gasless_redeem, condition_id, outcome_index, wallet_address)
-
-def place_bet(coin, direction, amount):
-    if DRY_RUN: return True
-    try:
-        client = _get_client()
-        order_args = OrderArgs(price=0.99, size=amount, side="BUY", token_id=coin)
-        signed_order = client.create_order(order_args)
-        resp = client.post_order(signed_order, OrderType.FOK)
-        return resp and resp.get("success")
-    except Exception as e:
-        log_error(f"Trade error: {e}")
-        return False
-
-async def async_place_bet(coin, direction, amount):
-    return await asyncio.to_thread(place_bet, coin, direction, amount)

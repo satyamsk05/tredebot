@@ -2,23 +2,17 @@ import logging
 
 def check_signal(closes):
     """
-    Checks the last 3 closes (probabilities 0-1 of the YES token).
-    Returns "NO" if 3 closes > 0.5 (UP streak).
-    Returns "YES" if 3 closes < 0.5 (DOWN streak).
+    Returns "YES/NO" for streaks >= 3. (Standard Martingale: 3-6-13...)
     """
     if len(closes) < 3:
         return None
 
     last_3 = closes[-3:]
     
-    # Check if all 3 are above 0.5
-    if all(price > 0.5 for price in last_3):
-        logging.info(f"Signal: 3 closes > 0.5 {last_3}. Betting NO.")
+    # Standard Mode: Check 3rd streak or higher
+    if all(p > 0.5 for p in last_3):
         return "NO"
-
-    # Check if all 3 are below 0.5
-    if all(price < 0.5 for price in last_3):
-        logging.info(f"Signal: 3 closes < 0.5 {last_3}. Betting YES.")
+    if all(p < 0.5 for p in last_3):
         return "YES"
 
     return None

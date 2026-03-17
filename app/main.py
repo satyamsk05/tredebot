@@ -10,7 +10,7 @@ from datetime import datetime
 
 from app.config import (
     INTERVAL, DRY_RUN, INITIAL_BET_AMOUNT, WALLET_ADDRESS, 
-    FUNDER_ADDRESS, ENABLE_5M, ENABLE_15M, COINS
+    FUNDER_ADDRESS, COINS, ENABLE_5M, ENABLE_15M
 )
 from app.logger import ui, log_info, log_success, log_warning, log_error, log_trade, log_countdown, log_telegram, log_status, print_summary, print_result_banner, log_network_error
 from app.db import save_candle, get_last_n_candles, save_trade
@@ -54,45 +54,17 @@ def send_telegram_notify(message):
 def bot_loop():
     mg = Martingale()
     
-    # Define supported markets dynamically
+    # Define supported markets based on config.py (Kaam ki cheez)
     MARKETS = []
+    if ENABLE_15M:
+        for coin in COINS:
+            MARKETS.append({"id": f"{coin.lower()}_15m", "coin": coin.upper(), "interval": 15, "label": f"{coin.upper()}_15m"})
+    if ENABLE_5M:
+        for coin in COINS:
+            MARKETS.append({"id": f"{coin.lower()}_5m", "coin": coin.upper(), "interval": 5, "label": f"{coin.upper()}_5m"})
     
-    # Initialize data/market_config.json if not exists
-    MARKET_CONFIG_FILE = "data/market_config.json"
-    config = {}
-    if os.path.exists(MARKET_CONFIG_FILE):
-        try:
-            with open(MARKET_CONFIG_FILE, "r") as f:
-                config = json.load(f)
-        except: pass
-    
-    # Default: SOL 15m ON, others OFF
-    default_config = {}
-    for coin in COINS:
-        default_config[f"{coin.lower()}_5m"] = False
-        default_config[f"{coin.lower()}_15m"] = False
-    
-    # Explicit user request: Default SOL 15m ON
-    if "sol_15m" in default_config:
-        default_config["sol_15m"] = True
-    
-    # Merge existing config or use default
-    if not config:
-        config = default_config
-        with open(MARKET_CONFIG_FILE, "w") as f:
-            json.dump(config, f, indent=4)
-    
-    # Build live markets list based on config file
-    for key, enabled in config.items():
-        if enabled:
-            # key format: btc_5m
-            parts = key.split("_")
-            coin = parts[0].upper()
-            interval = int(parts[1].replace("m", ""))
-            MARKETS.append({"id": key, "coin": coin, "interval": interval, "label": f"{coin}_{interval}m"})
-    
-    # Primary market for UI updates (first enabled)
-    PRIMARY_MARKET_ID = MARKETS[0]['id'] if MARKETS else None
+    # Primary market for UI updates
+    PRIMARY_MARKET_ID = MARKETS[0]['id'] if MARKETS else "sol_15m"
     
     # Initialize Market States
     market_states = {}
@@ -114,15 +86,7 @@ def bot_loop():
     ui.status_data["bet_amount"] = mg.get_bet(first_m)
     
     # Load and show current martingale mode
-    m_mode = "STD"
-    if os.path.exists("data/ui_config.json"):
-        try:
-            with open("data/ui_config.json", "r") as f:
-                cfg = json.load(f)
-                if cfg.get("martingale_mode") == "test":
-                    m_mode = "TEST"
-        except: pass
-    ui.status_data["martingale_mode"] = m_mode
+    ui.status_data["martingale_mode"] = "STD"
     ui.status_data["pending_trade"] = "None"
 
     loop_count = 0
@@ -135,25 +99,32 @@ def bot_loop():
     
     # Send startup notification to Telegram
     send_telegram_notify(
-        "╔══════════════════════════╗\n"
-        "║   📈  NODE INITIALIZED  ║\n"
-        "╚══════════════════════════╝\n\n"
-        "Strat  »  BTC 3-Streak Reversal\n"
-        f"Base   »  ${INITIAL_BET_AMOUNT}\n"
-        "Window »  Multi-TF (5m/15m)\n"
-        f"Mode   »  {'SIMULATION 🧪' if DRY_RUN else 'LIVE 💸'}\n"
-        f"Gas    »  {matic_bal} MATIC\n"
-        f"Beat   »  {datetime.now().strftime('%H:%M:%S')}\n\n"
-        "———————————————————"
+        "� *NODE INITIALIZED*\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        f"📡 *Strat:* SOL Reversal Alpha\n"
+        f"🛠 *Mode:* {'LIVE 💸' if not DRY_RUN else 'SIMULATION 🧪'}\n"
+        f"⏱ *Window:* SOL 15m (Dedicated)\n"
+        f"⛽ *Gas:* `{matic_bal}` MATIC\n"
+        f"⏰ *Beat:* {datetime.now().strftime('%H:%M:%S')}\n"
+        "━━━━━━━━━━━━━━━━━━"
     )
     
-    # Start Telegram Bot as a separate process
-    tg_process = subprocess.Popen(
-        [sys.executable, "-m", "app.bot.telegram_bot"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
-    )
+    # Kill any existing Telegram bot processes to prevent duplicates/old versions
+    if sys.platform == "win32":
+        try:
+            subprocess.call(['taskkill', '/F', '/IM', 'python.exe', '/FI', 'MODULES eq app.bot.telegram_bot'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            # Alternatively, simpler approach for common setups:
+            os.system('taskkill /F /FI "WINDOWTITLE eq Telegram Bot UI*" /T >nul 2>&1')
+        except: pass
+
+    # Start Telegram Bot as a separate process with error capture
+    with open("logs/telegram_bot_stderr.log", "a") as err_log:
+        tg_process = subprocess.Popen(
+            [sys.executable, "-m", "app.bot.telegram_bot"],
+            stdout=subprocess.DEVNULL,
+            stderr=err_log,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
+        )
     log_info(f"Master Controller Active (Telegram PID: {tg_process.pid})")
 
     def cleanup(sig=None, frame=None):
@@ -170,52 +141,29 @@ def bot_loop():
     sys_signal.signal(sys_signal.SIGTERM, cleanup)
 
     # Main Loop
-    log_status(True, ["BTC"])
+    log_status(True, ["SOL"])
     ui.update()
 
     while True:
         try:
             now_ts = int(time.time())
             
-            # Hot-Reload active markets from config
-            from dotenv import load_dotenv
-            load_dotenv(override=True)
-            e_5m = os.getenv("ENABLE_5M", "true").lower() == "true"
-            e_15m = os.getenv("ENABLE_15M", "true").lower() == "true"
-
-            MARKET_CONFIG_FILE = "data/market_config.json"
-            if os.path.exists(MARKET_CONFIG_FILE):
-                try:
-                    with open(MARKET_CONFIG_FILE, "r") as f:
-                        market_config = json.load(f)
-                except: 
-                    market_config = {}
-            else:
-                market_config = {}
-
-            # Rebuild MARKETS list to respect hot-reloaded config
+            # Re-calculating MARKETS to respect live config strings (Kaam ki cheez)
             MARKETS = []
-            for key, enabled in market_config.items():
-                if enabled:
-                    parts = key.split("_")
-                    coin = parts[0].upper()
-                    if coin not in COINS: continue
-                    
-                    interval = int(parts[1].replace("m", ""))
-                    if interval == 5 and not e_5m: continue
-                    if interval == 15 and not e_15m: continue
-                    
-                    MARKETS.append({"id": key, "coin": coin, "interval": interval, "label": f"{coin}_{interval}m"})
+            if ENABLE_15M:
+                for coin in COINS:
+                    MARKETS.append({"id": f"{coin.lower()}_15m", "coin": coin.upper(), "interval": 15, "label": f"{coin.upper()}_15m"})
+            if ENABLE_5M:
+                for coin in COINS:
+                    MARKETS.append({"id": f"{coin.lower()}_5m", "coin": coin.upper(), "interval": 5, "label": f"{coin.upper()}_5m"})
             
-            # Update PRIMARY_MARKET_ID and UI display
             if MARKETS:
                 PRIMARY_MARKET_ID = MARKETS[0]['id']
-                # Show all enabled TFs in the UI header
                 all_tfs = ", ".join([m['label'] for m in MARKETS])
                 ui.status_data["active_market"] = all_tfs
             else:
-                PRIMARY_MARKET_ID = None
-                ui.status_data["active_market"] = "None"
+                PRIMARY_MARKET_ID = "sol_15m"
+                ui.status_data["active_market"] = "SOL_15m"
 
             for m in MARKETS:
                 m_id = m['id']
@@ -316,18 +264,18 @@ def bot_loop():
                                             result="WIN",
                                             payout=payout,
                                             order_type=pending.get('order_type', "AUTO"),
-                                            interval=interval,
+                                            interval=m_interval,
                                             outcome_index=outcome_idx
                                         )
                                         
                                         send_telegram_notify(
-                                            "╔══════════════════════════╗\n"
-                                            f"║   🏆  WIN · {m_label:<10}    ║\n"
-                                            "╚══════════════════════════╝\n\n"
-                                            f"Payout »  +${payout:.2f}\n"
-                                            f"Close  »  {close_price}\n"
-                                            "Reset  »  L1\n\n"
-                                            "————————————————"
+                                            "🏆  *PROFIT SECURED!*  🏆\n"
+                                            "━━━━━━━━━━━━━━━━━━━━\n"
+                                            f"💰  *Payout:*  `+${payout:.2f}`\n"
+                                            f"📊  *Market:*  `{m_label}`\n"
+                                            f"📉  *Close:*   `{close_price}`\n"
+                                            "━━━━━━━━━━━━━━━━━━━━\n"
+                                            "🔄  *Resetting to Level 1...*"
                                         )
                                         trade_res = "WIN"
                                     else:
@@ -342,17 +290,17 @@ def bot_loop():
                                             result="LOSS",
                                             payout=0,
                                             order_type=pending.get('order_type', "AUTO"),
-                                            interval=interval
+                                            interval=m_interval
                                         )
                                         
                                         send_telegram_notify(
-                                            "╔══════════════════════════╗\n"
-                                            f"║   ❌  LOSS · {m_label:<9}   ║\n"
-                                            "╚══════════════════════════╝\n\n"
-                                            f"Loss   »  -${bet_amount:.2f}\n"
-                                            f"Close  »  {close_price}\n"
-                                            f"Next   »  L{mg.get_step(m_label)+1} · ${mg.get_bet(m_label)}\n\n"
-                                            "——————————————————"
+                                            "❌  *TRADE LOSS*  ❌\n"
+                                            "━━━━━━━━━━━━━━━━━━━━\n"
+                                            f"📉  *Loss:*    `-${bet_amount:.2f}`\n"
+                                            f"📊  *Market:*  `{m_label}`\n"
+                                            f"📉  *Close:*   `{close_price}`\n"
+                                            "━━━━━━━━━━━━━━━━━━━━\n"
+                                            f"🪜  *Next:* L{mg.get_step(m_label)+1} » `${mg.get_bet(m_label)}`"
                                         )
                                         trade_res = "LOSS"
                                     state['pending_bet'] = None
@@ -367,15 +315,16 @@ def bot_loop():
                                     token_id=yes_token, 
                                     timestamp=closed_market['timestamp'], 
                                     close_price=close_price,
-                                    interval=interval
+                                    interval=m_interval
                                 )
                                 
-                                # Signal Check (3-streak reversal strategy)
-                                closes_candles = get_last_n_candles(3, interval=interval)
+                                # Signal Check (Standard 3-streak reversal strategy)
+                                closes_candles = get_last_n_candles(4, interval=m_interval)
                                 closes = [c['close_price'] for c in closes_candles]
                                 trade_signal = check_signal(closes)
                                 
                                 if trade_signal:
+                                    display_signal = trade_signal
                                     amount = mg.get_bet(m_label)
                                     if os.path.exists("pause.flag"):
                                         log_warning(f"[{m_label}] Bot is PAUSED. Skipping trade.")
@@ -386,14 +335,14 @@ def bot_loop():
                                         next_market = get_active_market(coin=m_coin, offset_minutes=0, interval=interval)
                                         if next_market:
                                             state['active_signal'] = {
-                                                "direction": trade_signal,
+                                                "direction": display_signal,
                                                 "retry_until": now_ts + 30,
                                                 "amount": amount,
                                                 "timestamp": next_market['timestamp'],
                                                 "question": next_market.get('question', ''),
                                                 "notified_retry": False
                                             }
-                                            log_info(f"[{m_label}] {trade_signal} Signal! Entry window open for 30s.")
+                                            log_info(f"[{m_label}] {display_signal} Signal! Entry window open for 30s.")
                                         else:
                                             log_error(f"[{m_label}] Failed to fetch market for next candle.")
                         else:
@@ -492,30 +441,29 @@ def bot_loop():
                                 # Notify Telegram
                                 exec_time = datetime.now().strftime('%H:%M:%S')
                                 send_telegram_notify(
-                                    "╔══════════════════════════╗\n"
-                                    f"║   🎯  AUTO · {m_label:<9}   ║\n"
-                                    "╚══════════════════════════╝\n\n"
-                                    f"Time   »  {exec_time}\n"
-                                    f"Amt    »  ${signal['amount']}\n"
-                                    f"Side   »  {signal['direction']} {'▲' if signal['direction'] == 'YES' else '▼'}\n\n"
-                                    "——————————————————\n"
-                                    f"Market »  {m_coin} Up or Down\n"
-                                    f"{signal['question'].split('Up or Down ')[-1]}\n"
-                                    "————————————————————"
+                                    "🎯  *TRADE EXECUTED*  🎯\n"
+                                    "━━━━━━━━━━━━━━━━━━━━\n"
+                                    f"↕️  *Side:*   {signal['direction']} {'▲' if signal['direction'] == 'YES' else '▼'}\n"
+                                    f"💰  *Bet:*    `${signal['amount']}`\n"
+                                    f"📊  *Market:*  `{m_label}`\n"
+                                    f"⏰  *Time:*    `{exec_time}`\n"
+                                    "━━━━━━━━━━━━━━━━━━━━"
                                 )
                             else:
                                 if not signal.get('notified_retry'):
                                     signal['notified_retry'] = True
                                     send_telegram_notify(
-                                        f"⚠️  {m_label} Entry Failed!\n"
-                                        f"Liquidity issues or rejection.\n"
-                                        f"🔄 Retrying for 30s..."
+                                        f"⚠️ *{m_label} Entry Failed!*\n"
+                                        "━━━━━━━━━━━━━━━━━━\n"
+                                        "Liquidity issues or rejection.\n"
+                                        "🔄 *Retrying for 30s...*"
                                     )
                     else:
                         log_warning(f"[{m_label}] Trade window EXPIRED (30s) for {signal['direction']}. No liquidity found.")
                         send_telegram_notify(
-                            f"❌  {m_label} AUTO MISSED!\n"
-                            f"Window expired after 30s retries.\n"
+                            f"❌ *{m_label} AUTO MISSED!*\n"
+                            "━━━━━━━━━━━━━━━━━━\n"
+                            "Window expired after 30s retries.\n"
                             f"No entry found for {signal['direction']}."
                         )
                         state['active_signal'] = None
@@ -538,16 +486,7 @@ def bot_loop():
                             ui.status_data["yes_price"] = f"{y_price:.2f}"
                             ui.status_data["no_price"] = f"{(1.0 - y_price):.2f}"
 
-                    # Refresh mode too
-                    m_mode = "STD"
-                    if os.path.exists("data/ui_config.json"):
-                        try:
-                            with open("data/ui_config.json", "r") as f:
-                                cfg = json.load(f)
-                                if cfg.get("martingale_mode") == "test":
-                                    m_mode = "TEST"
-                        except: pass
-                    ui.status_data["martingale_mode"] = m_mode
+                    ui.status_data["martingale_mode"] = "STD"
                 except Exception as p_err:
                     log_network_error("polling status", p_err)
 
@@ -580,14 +519,12 @@ def bot_loop():
                                 if success:
                                     log_success(f"Claim Successful: ${payout:.2f}")
                                     send_telegram_notify(
-                                        "╔══════════════════════════╗\n"
-                                        "║  💰  FINANCIAL OVERVIEW ║\n"
-                                        "╚══════════════════════════╝\n\n"
-                                        f"Payout »  ${payout:.2f} USDC.e\n"
-                                        f"Wallet »  {wallet[:6]}...{wallet[-4:]}\n\n"
-                                        "———————————————————\n"
-                                        "~ Auto-claim processed ~\n"
-                                        "———————————————————"
+                                        "🎁  *AUTO-CLAIM COMPLETE*  🎁\n"
+                                        "━━━━━━━━━━━━━━━━━━━━\n"
+                                        f"💰  *Payout:*  `${payout:.2f}` USDC.e\n"
+                                        f"👛  *Wallet:*  `{wallet[:6]}...{wallet[-4:]}`\n"
+                                        "━━━━━━━━━━━━━━━━━━━━\n"
+                                        "✨ *Funds added to balance.*"
                                     )
                                 else:
                                     log_error(f"Auto-Claim failed for {cond_id[:10]}. Will retry in 5m.")
