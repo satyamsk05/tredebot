@@ -71,6 +71,7 @@ def bot_loop():
     for m in MARKETS:
         market_states[m['id']] = {
             "last_ts": 0,
+            "processed_ts": 0, # Tracking for Smart Resume (Kaam ki cheez)
             "pending_bet": None,
             "startup_candles": 0,
             "coin": m['coin'],
@@ -85,8 +86,6 @@ def bot_loop():
     ui.status_data["martingale_step"] = mg.get_step(first_m)
     ui.status_data["bet_amount"] = mg.get_bet(first_m)
     
-    # Load and show current martingale mode
-    ui.status_data["martingale_mode"] = "STD"
     ui.status_data["pending_trade"] = "None"
 
     loop_count = 0
@@ -198,12 +197,21 @@ def bot_loop():
                         
                     ui.update()
 
-                if m_floor_ts > state['last_ts']:
-                    # Only increment if it's not the very first immediate trigger
-                    if state['last_ts'] != 0:
-                        state['startup_candles'] += 1
-                    state['last_ts'] = m_floor_ts
-                    log_info(f"[{m_label}] CANDLE CLOSED - Processing: {datetime.fromtimestamp(m_floor_ts-interval_sec).strftime('%H:%M')}")
+                # Smart Resume Catch-up Boundary Logic
+                # Trigger if:
+                # 1. Real boundary crossed (m_floor_ts > last_ts)
+                # 2. OR bot was paused and just unpaused within 5 mins of a boundary we haven't processed yet
+                is_resume_catchup = not os.path.exists("pause.flag") and m_floor_ts > state.get('processed_ts', 0) and (now_ts - m_floor_ts) < 300
+                
+                if m_floor_ts > state['last_ts'] or is_resume_catchup:
+                    # Update transition trackers
+                    if m_floor_ts > state['last_ts']:
+                        if state['last_ts'] != 0:
+                            state['startup_candles'] += 1
+                        state['last_ts'] = m_floor_ts
+                    
+                    state['processed_ts'] = m_floor_ts
+                    log_info(f"[{m_label}] BOUNDARY TRIGGER {'(Catch-up)' if is_resume_catchup else ''} - Processing: {datetime.fromtimestamp(m_floor_ts-interval_sec).strftime('%H:%M')}")
                     
                     try:
                         # Fetch the market that just closed
@@ -327,7 +335,8 @@ def bot_loop():
                                     display_signal = trade_signal
                                     amount = mg.get_bet(m_label)
                                     if os.path.exists("pause.flag"):
-                                        log_warning(f"[{m_label}] Bot is PAUSED. Skipping trade.")
+                                        log_warning(f"[{m_label}] Bot is PAUSED. Logic skipped.")
+                                        state['processed_ts'] = 0 # Ensure we retry once unpaused
                                     elif state['startup_candles'] < 3:
                                         log_warning(f"[{m_label}] Startup: Waiting for candles ({state['startup_candles']}/3)")
                                     else:
@@ -486,7 +495,6 @@ def bot_loop():
                             ui.status_data["yes_price"] = f"{y_price:.2f}"
                             ui.status_data["no_price"] = f"{(1.0 - y_price):.2f}"
 
-                    ui.status_data["martingale_mode"] = "STD"
                 except Exception as p_err:
                     log_network_error("polling status", p_err)
 

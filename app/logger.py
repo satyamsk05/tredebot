@@ -85,8 +85,7 @@ class SimpleLogger:
         mkt = self.status_data['active_market']
         if vlen(mkt) > 45: mkt = mkt[:42] + "..."
         m_str = f"{W}MARKET: {W}{mkt}"
-        m_mode = self.status_data.get("martingale_mode", "STD").upper()
-        mg = f"{W}MODE: {C}{m_mode} {W}| STEP: {C}L{int(self.status_data['martingale_step'])+1} {W}| BET: {C}${self.status_data['bet_amount']}"
+        mg = f"{W}STEP: {C}L{int(self.status_data['martingale_step'])+1} {W}| BET: {C}${self.status_data['bet_amount']}"
         
         l2 = f"  {m_str}"
         l2 += " " * (self.width - vlen(l2) - vlen(mg) - 2)
