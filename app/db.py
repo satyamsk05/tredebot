@@ -24,7 +24,8 @@ def init_db():
             token_id TEXT,
             timestamp INTEGER,
             close_price REAL,
-            interval INTEGER DEFAULT 5
+            interval INTEGER DEFAULT 5,
+            coin TEXT
         )
     ''')
     
@@ -45,9 +46,16 @@ def init_db():
         )
     ''')
     
-    # Migration: Add interval column if missing
+    # Indices for performance (Lightweight Optimization)
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_candles_ts ON candles (timestamp)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_trades_ts ON trades (timestamp)')
+    
     try:
         cursor.execute("ALTER TABLE candles ADD COLUMN interval INTEGER DEFAULT 5")
+    except: pass
+    
+    try:
+        cursor.execute("ALTER TABLE candles ADD COLUMN coin TEXT")
     except: pass
     try:
         cursor.execute("ALTER TABLE trades ADD COLUMN interval INTEGER DEFAULT 5")
@@ -62,41 +70,49 @@ def init_db():
     conn.commit()
     conn.close()
 
-def save_candle(market_id, token_id, timestamp, close_price, interval=5):
+def save_candle(market_id, token_id, timestamp, close_price, interval=5, coin=None):
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('''
-        INSERT INTO candles (market_id, token_id, timestamp, close_price, interval)
-        VALUES (?, ?, ?, ?, ?)
-    ''', (market_id, token_id, timestamp, close_price, interval))
+        INSERT INTO candles (market_id, token_id, timestamp, close_price, interval, coin)
+        VALUES (?, ?, ?, ?, ?, ?)
+    ''', (market_id, token_id, timestamp, close_price, interval, coin))
     conn.commit()
     conn.close()
     logging.info(f"Saved candle for {market_id} ({interval}m) at {timestamp}: Price {close_price}")
 
-async def async_save_candle(market_id, token_id, timestamp, close_price, interval=5):
-    return await asyncio.to_thread(save_candle, market_id, token_id, timestamp, close_price, interval)
+async def async_save_candle(market_id, token_id, timestamp, close_price, interval=5, coin=None):
+    return await asyncio.to_thread(save_candle, market_id, token_id, timestamp, close_price, interval, coin)
 
-def get_last_n_candles(limit=10, market_id=None, interval=None):
+def get_last_n_candles(limit=10, market_id=None, interval=None, coin=None):
     conn = get_db_connection()
     cursor = conn.cursor()
-    if interval:
+    
+    if coin and interval:
         cursor.execute('''
-            SELECT timestamp, close_price, interval FROM candles
+            SELECT timestamp, close_price FROM candles
+            WHERE coin = ? AND interval = ?
+            ORDER BY timestamp DESC
+            LIMIT ?
+        ''', (coin, interval, limit))
+    elif interval:
+        cursor.execute('''
+            SELECT timestamp, close_price FROM candles
             WHERE interval = ?
             ORDER BY timestamp DESC
             LIMIT ?
         ''', (interval, limit))
     elif market_id:
         cursor.execute('''
-            SELECT timestamp, close_price, interval FROM candles
+            SELECT timestamp, close_price FROM candles
             WHERE market_id = ?
             ORDER BY timestamp DESC
             LIMIT ?
         ''', (market_id, limit))
     else:
         cursor.execute('''
-            SELECT timestamp, close_price, interval FROM candles
-            WHERE timestamp DESC
+            SELECT timestamp, close_price FROM candles
+            ORDER BY timestamp DESC
             LIMIT ?
         ''', (limit,))
     rows = cursor.fetchall()
@@ -105,8 +121,8 @@ def get_last_n_candles(limit=10, market_id=None, interval=None):
     latest = [{"timestamp": row['timestamp'], "close_price": row['close_price']} for row in rows]
     return latest[::-1]
 
-async def async_get_last_n_candles(limit=10, market_id=None, interval=None):
-    return await asyncio.to_thread(get_last_n_candles, limit, market_id, interval)
+async def async_get_last_n_candles(limit=10, market_id=None, interval=None, coin=None):
+    return await asyncio.to_thread(get_last_n_candles, limit, market_id, interval, coin)
 
 def save_trade(timestamp, market_id, direction, amount, result, payout, order_type="AUTO", interval=5, outcome_index=0):
     conn = get_db_connection()
@@ -137,21 +153,36 @@ def mark_as_claimed(trade_id):
     conn.commit()
     conn.close()
 
-def get_24h_stats(interval=None):
-    now = int(time.time())
-    one_day_ago = now - (24 * 3600)
+def get_recent_trades(limit=10):
     conn = get_db_connection()
     cursor = conn.cursor()
+    cursor.execute('''
+        SELECT id, timestamp, market_id, direction, amount, result, payout, interval 
+        FROM trades 
+        ORDER BY timestamp DESC 
+        LIMIT ?
+    ''', (limit,))
+    rows = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+    return rows
+
+async def async_get_recent_trades(limit=10):
+    return await asyncio.to_thread(get_recent_trades, limit)
+
+def get_stats_period(days=1, interval=None):
+    now = int(time.time())
+    since = now - (days * 24 * 3600)
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    query = "SELECT result, amount, payout FROM trades WHERE timestamp > ?"
+    params = [since]
+    
     if interval:
-        cursor.execute('''
-            SELECT result, amount, payout FROM trades
-            WHERE timestamp > ? AND interval = ?
-        ''', (one_day_ago, interval))
-    else:
-        cursor.execute('''
-            SELECT result, amount, payout FROM trades
-            WHERE timestamp > ?
-        ''', (one_day_ago,))
+        query += " AND interval = ?"
+        params.append(interval)
+        
+    cursor.execute(query, params)
     rows = cursor.fetchall()
     conn.close()
     
@@ -164,8 +195,15 @@ def get_24h_stats(interval=None):
         "wins": wins,
         "losses": losses,
         "total_profit": total_profit,
-        "total_volume": total_volume
+        "total_volume": total_volume,
+        "days": days
     }
+
+async def async_get_stats_period(days=1, interval=None):
+    return await asyncio.to_thread(get_stats_period, days, interval)
+
+def get_24h_stats(interval=None):
+    return get_stats_period(days=1, interval=interval)
 
 async def async_get_24h_stats(interval=None):
     return await asyncio.to_thread(get_24h_stats, interval)

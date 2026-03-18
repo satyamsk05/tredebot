@@ -55,73 +55,80 @@ def send_telegram_notify(message):
     except Exception:
         pass
 
-def bot_loop():
+async def heartbeat_worker():
+    """Background task to send heartbeats every 7 seconds."""
+    while True:
+        try:
+            await async_send_heartbeat()
+        except Exception as e:
+            logging.error(f"[HEARTBEAT] Worker error: {e}")
+        await asyncio.sleep(7)
+
+async def redemption_worker():
+    """Background task to check for winners every 5 minutes."""
+    while True:
+        try:
+            # Wait 5 mins between checks
+            await asyncio.sleep(300)
+            log_info("Running background Auto-Redemption check...")
+            wallets = list(set(filter(None, [WALLET_ADDRESS, FUNDER_ADDRESS])))
+            for wallet in wallets:
+                # fetch_redeemable_positions is currently sync, we offload to thread
+                redeemables = await asyncio.to_thread(fetch_redeemable_positions, wallet)
+                if redeemables:
+                    log_success(f"Auto-Redeem: Found {len(redeemables)} winning positions for {wallet[:10]}...")
+                    for pos in redeemables:
+                        cond_id = pos['condition_id']
+                        idx = pos['outcome_index']
+                        payout = pos['payout']
+                        log_info(f"Initiating claim for {cond_id[:10]}... (${payout:.2f})")
+                        
+                        # gasless_redeem and redeem_winnings are sync, offload to thread
+                        success = await asyncio.to_thread(gasless_redeem, cond_id, idx, wallet)
+                        if not success:
+                            log_warning("Gasless claim failed. Falling back to on-chain...")
+                            success = await asyncio.to_thread(redeem_winnings, cond_id, idx, wallet)
+                        
+                        if success:
+                            log_success(f"Claim Successful: ${payout:.2f}")
+                            send_telegram_notify(f"🎁 *AUTO-CLAIM COMPLETE*\n${payout:.2f} USDC.e claimed for {wallet[:6]}...")
+        except Exception as e:
+            log_error(f"Redemption Worker error: {e}")
+
+async def bot_loop():
     mg = Martingale()
     
-    # Define supported markets based on config.py (Kaam ki cheez)
-    MARKETS = []
+    # Define supported markets based on config.py (Normalized to POLL_MARKETS)
+    POLL_MARKETS = []
     if ENABLE_15M:
-        for coin in COINS:
-            MARKETS.append({"id": f"{coin.lower()}_15m", "coin": coin.upper(), "interval": 15, "label": f"{coin.upper()}_15m"})
+        for coin in COINS: POLL_MARKETS.append({"id": f"{coin.lower()}_15m", "coin": coin.upper(), "interval": 15, "label": f"{coin.upper()}_15m"})
     if ENABLE_5M:
-        for coin in COINS:
-            MARKETS.append({"id": f"{coin.lower()}_5m", "coin": coin.upper(), "interval": 5, "label": f"{coin.upper()}_5m"})
+        for coin in COINS: POLL_MARKETS.append({"id": f"{coin.lower()}_5m", "coin": coin.upper(), "interval": 5, "label": f"{coin.upper()}_5m"})
     
-    # Primary market for UI updates
-    PRIMARY_MARKET_ID = MARKETS[0]['id'] if MARKETS else "sol_15m"
+    # Initialize Market States efficiently
+    market_states = {m['id']: {
+        "last_ts": 0, "processed_ts": 0, "pending_bet": None, "startup_candles": 0,
+        "coin": m['coin'], "interval": m['interval'], "label": m['label']
+    } for m in POLL_MARKETS}
     
-    # Initialize Market States
-    market_states = {}
-    for m in MARKETS:
-        market_states[m['id']] = {
-            "last_ts": 0,
-            "processed_ts": 0, # Tracking for Smart Resume (Kaam ki cheez)
-            "pending_bet": None,
-            "startup_candles": 0,
-            "coin": m['coin'],
-            "interval": m['interval'],
-            "label": m['label']
-        }
-    
-    # Initialize UI state (Default to first active market or SOL if possible)
+    # Initialize UI state
     ui.status_data["balance"] = str(get_balance())
-    first_m = MARKETS[0]['label'] if MARKETS else "SOL_15m"
-    ui.status_data["active_market"] = first_m
-    ui.status_data["martingale_step"] = mg.get_step(first_m)
-    ui.status_data["bet_amount"] = mg.get_bet(first_m)
-    
+    first_m_label = POLL_MARKETS[0]['label'] if POLL_MARKETS else "SOL_15m"
+    ui.status_data["active_market"] = first_m_label
+    ui.status_data["martingale_step"] = mg.get_step(first_m_label)
+    ui.status_data["bet_amount"] = mg.get_bet(first_m_label)
     ui.status_data["pending_trade"] = "None"
 
     loop_count = 0
-    last_redemption_check = 0
-    last_heartbeat = 0
-    
     matic_bal = get_matic_balance()
     log_info(f"System Initialized. Signer MATIC Balance: {matic_bal} MATIC")
 
-    log_info("Consolidating System - Launching Telegram Bot UI...")
-    
-    # Send startup notification to Telegram
-    send_telegram_notify(
-        "� *NODE INITIALIZED*\n"
-        "━━━━━━━━━━━━━━━━━━\n"
-        f"📡 *Strat:* SOL Reversal Alpha\n"
-        f"🛠 *Mode:* {'LIVE 💸' if not DRY_RUN else 'SIMULATION 🧪'}\n"
-        f"⏱ *Window:* SOL 15m (Dedicated)\n"
-        f"⛽ *Gas:* `{matic_bal}` MATIC\n"
-        f"⏰ *Beat:* {datetime.now().strftime('%H:%M:%S')}\n"
-        "━━━━━━━━━━━━━━━━━━"
-    )
-    
-    # Kill any existing Telegram bot processes to prevent duplicates/old versions
+    # Start Telegram Bot
     if sys.platform == "win32":
         try:
-            subprocess.call(['taskkill', '/F', '/IM', 'python.exe', '/FI', 'MODULES eq app.bot.telegram_bot'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            # Alternatively, simpler approach for common setups:
             os.system('taskkill /F /FI "WINDOWTITLE eq Telegram Bot UI*" /T >nul 2>&1')
         except: pass
 
-    # Start Telegram Bot as a separate process with error capture
     with open("logs/telegram_bot_stderr.log", "a") as err_log:
         tg_process = subprocess.Popen(
             [sys.executable, "-m", "app.bot.telegram_bot"],
@@ -144,229 +151,107 @@ def bot_loop():
     sys_signal.signal(sys_signal.SIGINT, cleanup)
     sys_signal.signal(sys_signal.SIGTERM, cleanup)
 
-    # Main Loop
+    # Launch Background Workers
+    asyncio.create_task(heartbeat_worker())
+    asyncio.create_task(redemption_worker())
+
+    # Helper coroutine for per-market logic
+    async def process_market_step(m, now_ts, primary_id):
+        m_id = m['id']
+        state = market_states[m_id]
+        m_coin = m['coin']
+        m_interval = m['interval']
+        interval_sec = m_interval * 60
+        m_floor_ts = (now_ts // interval_sec) * interval_sec
+        m_label = m['label']
+
+        if m_id == primary_id:
+            next_boundary = m_floor_ts + interval_sec
+            log_countdown(next_boundary - now_ts)
+            ui.status_data["startup_status"] = f"{state['startup_candles']}/3" if state['startup_candles'] < 3 else "Ready"
+            ui.update()
+
+        is_resume_catchup = not os.path.exists("pause.flag") and m_floor_ts > state.get('processed_ts', 0) and (now_ts - m_floor_ts) < 300
+        
+        if m_floor_ts > state['last_ts'] or is_resume_catchup:
+            if m_floor_ts > state['last_ts']:
+                if state['last_ts'] != 0: state['startup_candles'] += 1
+                state['last_ts'] = m_floor_ts
+            state['processed_ts'] = m_floor_ts
+            
+            log_info(f"[{m_label}] BOUNDARY TRIGGER - Processing...")
+            
+            try:
+                from app.api.polymarket_api import async_get_active_market, async_get_last_trade_price
+                closed_market = await async_get_active_market(coin=m_coin, offset_minutes=-m_interval, interval=m_interval)
+                if closed_market:
+                    yes_token = closed_market['yes_token']
+                    close_price = await async_get_last_trade_price(yes_token)
+                    
+                    if close_price is not None:
+                        market_dir = "UP" if close_price > 0.5 else "DOWN"
+                        trade_res = None
+                        
+                        pending = state['pending_bet']
+                        if pending and pending['timestamp'] == closed_market['timestamp']:
+                            dir_bet = pending['direction']
+                            bet_amount = pending.get('amount', mg.get_bet(m_label))
+                            limit_price = pending.get('buy_price', 0.49 if mg.get_step(m_label) == 1 else 0.50)
+                            
+                            is_fill = (close_price >= limit_price) if dir_bet == "YES" else (close_price <= (1.0 - limit_price))
+                            if is_fill:
+                                log_success(f"[{m_label}] Trade WON! ({dir_bet}, Price: {close_price})")
+                                mg.win(m_label)
+                                shares = pending.get('shares', bet_amount / limit_price)
+                                update_virtual_balance(shares * 1.0)
+                                if pending.get('order_type') == "Manual Limit":
+                                    asyncio.create_task(async_notify_fill(coin=m_coin, direction=dir_bet, amount=bet_amount, price=limit_price))
+                                trade_res = "WIN"
+                            else:
+                                log_error(f"[{m_label}] Trade LOST! ({dir_bet}, Price: {close_price})")
+                                mg.lose(m_label)
+                                trade_res = "LOSS"
+                            
+                            outcome_idx = 1 if dir_bet == "YES" else 2
+                            await asyncio.to_thread(save_trade, timestamp=int(time.time()), market_id=closed_market['market_id'], direction=dir_bet, amount=bet_amount, result=trade_res, payout=bet_amount/limit_price if trade_res == "WIN" else 0, order_type=pending.get('order_type', "AUTO"), interval=m_interval, outcome_index=outcome_idx if trade_res == "WIN" else None)
+                            state['pending_bet'] = None
+                        
+                        if m_id == primary_id: print_result_banner(trade_res, market_dir)
+                        await asyncio.to_thread(save_candle, market_id=closed_market['market_id'], token_id=yes_token, timestamp=closed_market['timestamp'], close_price=close_price, interval=m_interval, coin=m_coin)
+                        
+                        closes_candles = await asyncio.to_thread(get_last_n_candles, 4, interval=m_interval)
+                        closes = [c['close_price'] for c in closes_candles]
+                        trade_signal = check_signal(closes)
+                        
+                        if trade_signal:
+                            if os.path.exists("pause.flag"): log_warning(f"[{m_label}] Bot is PAUSED. Logic skipped.")
+                            elif state['startup_candles'] < 3: log_warning(f"[{m_label}] Startup: Waiting for candles ({state['startup_candles']}/3)")
+                            else:
+                                next_market = await async_get_active_market(coin=m_coin, offset_minutes=0, interval=m_interval)
+                                if next_market:
+                                    state['active_signal'] = {"direction": trade_signal, "retry_until": now_ts + 30, "amount": mg.get_bet(m_label), "timestamp": next_market['timestamp'], "notified_retry": False}
+                                    log_info(f"[{m_label}] {trade_signal} Signal! Entry window open for 30s.")
+            except Exception as b_err:
+                log_network_error(f"processing {m_label} boundary", b_err)
+
     log_status(True, ["SOL"])
     ui.update()
+
+    # Static Configuration
+    POLL_MARKETS = []
+    if ENABLE_15M:
+        for coin in COINS: POLL_MARKETS.append({"id": f"{coin.lower()}_15m", "coin": coin.upper(), "interval": 15, "label": f"{coin.upper()}_15m"})
+    if ENABLE_5M:
+        for coin in COINS: POLL_MARKETS.append({"id": f"{coin.lower()}_5m", "coin": coin.upper(), "interval": 5, "label": f"{coin.upper()}_5m"})
+    
+    PRIMARY_MARKET_ID = POLL_MARKETS[0]['id'] if POLL_MARKETS else "sol_15m"
+    ui.status_data["active_market"] = ", ".join([m['label'] for m in POLL_MARKETS])
 
     while True:
         try:
             now_ts = int(time.time())
-            
-            # Re-calculating MARKETS to respect live config strings (Kaam ki cheez)
-            MARKETS = []
-            if ENABLE_15M:
-                for coin in COINS:
-                    MARKETS.append({"id": f"{coin.lower()}_15m", "coin": coin.upper(), "interval": 15, "label": f"{coin.upper()}_15m"})
-            if ENABLE_5M:
-                for coin in COINS:
-                    MARKETS.append({"id": f"{coin.lower()}_5m", "coin": coin.upper(), "interval": 5, "label": f"{coin.upper()}_5m"})
-            
-            if MARKETS:
-                PRIMARY_MARKET_ID = MARKETS[0]['id']
-                all_tfs = ", ".join([m['label'] for m in MARKETS])
-                ui.status_data["active_market"] = all_tfs
-            else:
-                PRIMARY_MARKET_ID = "sol_15m"
-                ui.status_data["active_market"] = "SOL_15m"
+            await asyncio.gather(*[process_market_step(m, now_ts, PRIMARY_MARKET_ID) for m in POLL_MARKETS])
 
-            for m in MARKETS:
-                m_id = m['id']
-                # Market is already filtered by the rebuild above, but state needs initialization if new
-                if m_id not in market_states:
-                    market_states[m_id] = {
-                        "last_ts": 0,
-                        "pending_bet": None,
-                        "startup_candles": 0,
-                        "coin": m['coin'],
-                        "interval": m['interval'],
-                        "label": m['label']
-                    }
-                
-                state = market_states[m_id]
-                m_coin = m['coin']
-                m_interval = m['interval']
-                interval_sec = m_interval * 60
-                m_floor_ts = (now_ts // interval_sec) * interval_sec
-                m_label = m['label']
-
-                # Update countdown and UI if it's the primary UI market
-                if m_id == PRIMARY_MARKET_ID:
-                    next_boundary = m_floor_ts + interval_sec
-                    log_countdown(next_boundary - now_ts)
-                    
-                    # Update Startup Status display
-                    if state['startup_candles'] < 3:
-                        ui.status_data["startup_status"] = f"{state['startup_candles']}/3"
-                    else:
-                        ui.status_data["startup_status"] = "Ready"
-                        
-                    ui.update()
-
-                # Smart Resume Catch-up Boundary Logic
-                # Trigger if:
-                # 1. Real boundary crossed (m_floor_ts > last_ts)
-                # 2. OR bot was paused and just unpaused within 5 mins of a boundary we haven't processed yet
-                is_resume_catchup = not os.path.exists("pause.flag") and m_floor_ts > state.get('processed_ts', 0) and (now_ts - m_floor_ts) < 300
-                
-                if m_floor_ts > state['last_ts'] or is_resume_catchup:
-                    # Update transition trackers
-                    if m_floor_ts > state['last_ts']:
-                        if state['last_ts'] != 0:
-                            state['startup_candles'] += 1
-                        state['last_ts'] = m_floor_ts
-                    
-                    state['processed_ts'] = m_floor_ts
-                    log_info(f"[{m_label}] BOUNDARY TRIGGER {'(Catch-up)' if is_resume_catchup else ''} - Processing: {datetime.fromtimestamp(m_floor_ts-interval_sec).strftime('%H:%M')}")
-                    
-                    try:
-                        # Fetch the market that just closed
-                        closed_market = get_active_market(coin=m_coin, offset_minutes=-m_interval, interval=m_interval)
-                        if closed_market:
-                            yes_token = closed_market['yes_token']
-                            close_price = get_last_trade_price(yes_token)
-                            
-                            if close_price is not None:
-                                market_dir = "UP" if close_price > 0.5 else "DOWN"
-                                trade_res = None
-                                
-                                # Process Pending Bet for this market
-                                pending = state['pending_bet']
-                                if pending and pending['timestamp'] == closed_market['timestamp']:
-                                    dir_bet = pending['direction']
-                                    bet_amount = pending.get('amount', mg.get_bet(m_label))
-                                    limit_price = pending.get('buy_price', 0.50)
-                                    
-                                    # For limit orders: Did price cross the limit?
-                                    # (In simulation we use close_price as a proxy for 'ever hit')
-                                    is_fill = False
-                                    if dir_bet == "YES":
-                                        if close_price >= limit_price: is_fill = True
-                                    else:
-                                        if close_price <= (1.0 - limit_price): is_fill = True
-                                    
-                                    if is_fill:
-                                        log_success(f"[{m_label}] Trade WON! ({dir_bet}, Price: {close_price})")
-                                        mg.win(m_label)
-                                        
-                                        shares = pending.get('shares', bet_amount / limit_price)
-                                        payout = shares * 1.0
-                                        update_virtual_balance(payout)
-                                        
-                                        # New: Notify user on Fill
-                                        if pending.get('order_type') == "Manual Limit":
-                                            try:
-                                                asyncio.run(
-                                                    async_notify_fill(
-                                                        coin=m_label.split('_')[0],
-                                                        direction=dir_bet,
-                                                        amount=bet_amount,
-                                                        price=limit_price
-                                                    )
-                                                )
-                                            except Exception as ne:
-                                                log_error(f"Fill notification error: {ne}")
-                                        
-                                        # Outcome index for bitmask: YES = 1 (bit 0), NO = 2 (bit 1)
-                                        outcome_idx = 1 if dir_bet == "YES" else 2
-
-                                        save_trade(
-                                            timestamp=int(time.time()),
-                                            market_id=closed_market['market_id'],
-                                            direction=dir_bet,
-                                            amount=bet_amount,
-                                            result="WIN",
-                                            payout=payout,
-                                            order_type=pending.get('order_type', "AUTO"),
-                                            interval=m_interval,
-                                            outcome_index=outcome_idx
-                                        )
-                                        
-                                        send_telegram_notify(
-                                            "🏆  *PROFIT SECURED!*  🏆\n"
-                                            "━━━━━━━━━━━━━━━━━━━━\n"
-                                            f"💰  *Payout:*  `+${payout:.2f}`\n"
-                                            f"📊  *Market:*  `{m_label}`\n"
-                                            f"📉  *Close:*   `{close_price}`\n"
-                                            "━━━━━━━━━━━━━━━━━━━━\n"
-                                            "🔄  *Resetting to Level 1...*"
-                                        )
-                                        trade_res = "WIN"
-                                    else:
-                                        log_error(f"[{m_label}] Trade LOST! ({dir_bet}, Price: {close_price})")
-                                        mg.lose(m_label)
-                                        
-                                        save_trade(
-                                            timestamp=int(time.time()),
-                                            market_id=closed_market['market_id'],
-                                            direction=dir_bet,
-                                            amount=bet_amount,
-                                            result="LOSS",
-                                            payout=0,
-                                            order_type=pending.get('order_type', "AUTO"),
-                                            interval=m_interval
-                                        )
-                                        
-                                        send_telegram_notify(
-                                            "❌  *TRADE LOSS*  ❌\n"
-                                            "━━━━━━━━━━━━━━━━━━━━\n"
-                                            f"📉  *Loss:*    `-${bet_amount:.2f}`\n"
-                                            f"📊  *Market:*  `{m_label}`\n"
-                                            f"📉  *Close:*   `{close_price}`\n"
-                                            "━━━━━━━━━━━━━━━━━━━━\n"
-                                            f"🪜  *Next:* L{mg.get_step(m_label)+1} » `${mg.get_bet(m_label)}`"
-                                        )
-                                        trade_res = "LOSS"
-                                    state['pending_bet'] = None
-                                
-                                # Update UI banner for primary market results
-                                if m_id == PRIMARY_MARKET_ID:
-                                    print_result_banner(trade_res, market_dir)
-                                
-                                # Record candle in history
-                                save_candle(
-                                    market_id=closed_market['market_id'], 
-                                    token_id=yes_token, 
-                                    timestamp=closed_market['timestamp'], 
-                                    close_price=close_price,
-                                    interval=m_interval
-                                )
-                                
-                                # Signal Check (Standard 3-streak reversal strategy)
-                                closes_candles = get_last_n_candles(4, interval=m_interval)
-                                closes = [c['close_price'] for c in closes_candles]
-                                trade_signal = check_signal(closes)
-                                
-                                if trade_signal:
-                                    display_signal = trade_signal
-                                    amount = mg.get_bet(m_label)
-                                    if os.path.exists("pause.flag"):
-                                        log_warning(f"[{m_label}] Bot is PAUSED. Logic skipped.")
-                                        state['processed_ts'] = 0 # Ensure we retry once unpaused
-                                    elif state['startup_candles'] < 3:
-                                        log_warning(f"[{m_label}] Startup: Waiting for candles ({state['startup_candles']}/3)")
-                                    else:
-                                        # Set active signal for retry loop
-                                        next_market = get_active_market(coin=m_coin, offset_minutes=0, interval=interval)
-                                        if next_market:
-                                            state['active_signal'] = {
-                                                "direction": display_signal,
-                                                "retry_until": now_ts + 30,
-                                                "amount": amount,
-                                                "timestamp": next_market['timestamp'],
-                                                "question": next_market.get('question', ''),
-                                                "notified_retry": False
-                                            }
-                                            log_info(f"[{m_label}] {display_signal} Signal! Entry window open for 30s.")
-                                        else:
-                                            log_error(f"[{m_label}] Failed to fetch market for next candle.")
-                        else:
-                            log_error(f"[{m_label}] Failed to fetch market at boundary.")
-                    except Exception as b_err:
-                        log_network_error(f"processing {m_label} boundary", b_err)
-
-            # --- 2. FAST/POLLING LOGIC (Every Loop) ---
-            
-            # Sync Telegram Logs
             if os.path.exists("logs/telegram_activity.log"):
                 try:
                     with open("logs/telegram_activity.log", "r") as f:
@@ -375,196 +260,80 @@ def bot_loop():
                         for line in lines:
                             if line.strip(): log_telegram(line.strip())
                         open("logs/telegram_activity.log", "w").close()
-                except Exception as e:
-                    logging.error(f"Error handling Telegram activity: {e}")
+                except: pass
 
-            # Sync Manual Bets (Adopt to first enabled market)
             if os.path.exists("data/manual_bet.json"):
                 try:
-                    with open("data/manual_bet.json", "r") as f:
-                        manual_bet = json.load(f)
+                    with open("data/manual_bet.json", "r") as f: manual_bet = json.load(f)
                     os.remove("data/manual_bet.json")
-                    
-                    # Find first enabled market to adopt the bet
-                    m_key = None
-                    if MARKETS:
-                        m_key = MARKETS[0]['id']
-                    
-                    if m_key:
+                    m_coin = manual_bet.get('coin', 'SOL').upper()
+                    m_key = f"{m_coin.lower()}_15m"
+                    if m_key in market_states:
                         market_states[m_key]['pending_bet'] = manual_bet
-                        ui.status_data["pending_trade"] = f"{manual_bet['direction']} ${manual_bet['amount']} @ {manual_bet['buy_price']}"
-                        log_trade(f"Adopted Manual Bet for {m_key}: {manual_bet['direction']} @ {manual_bet['buy_price']}")
-                    else:
-                        log_error("No active markets to adopt manual bet!")
-                except Exception as me:
-                    log_error(f"Manual bet adoption error: {me}")
+                        log_info(f"[{m_key}] Injected manual bet from UI.")
+                        ui.status_data["pending_trade"] = f"{manual_bet['direction']} ${manual_bet['amount']}"
+                except: pass
 
-            # Clear pending display if no bets active
-            active_pending = any(s['pending_bet'] for s in market_states.values())
-            if not active_pending:
+            if not any(s['pending_bet'] for s in market_states.values()):
                 ui.status_data["pending_trade"] = "None"
 
-            # RETRY EXECUTION LOOP (Automated trades)
-            for m_id, state in market_states.items():
-                if state.get('active_signal') and not state.get('pending_bet'):
+            # 3. EXECUTION LOGIC: Mutual Exclusion (One Trade at a Time)
+            any_pending = any(s['pending_bet'] for s in market_states.values())
+            
+            if not any_pending:
+                candidates = [m_id for m_id, s in market_states.items() if s.get('active_signal')]
+                if candidates:
+                    # PRO LOGIC: SOLONA priority (if multiple signals at once)
+                    sol_candidates = [m for m in candidates if "sol_" in m]
+                    if sol_candidates:
+                        chosen_m_id = sol_candidates[0]
+                        log_info(f"Priority Signal: Overriding random selection for {chosen_m_id}")
+                    else:
+                        import random
+                        chosen_m_id = random.choice(candidates)
+                        
+                    state = market_states[chosen_m_id]
                     signal = state['active_signal']
-                    m_label = state['label']
                     
                     if now_ts <= signal['retry_until']:
-                        # Attempt placement
-                        # Re-fetch market to ensure we have the correct tokens
-                        m_coin = state['coin']
-                        interval = state['interval']
-                        
-                        m_next = get_active_market(coin=m_coin, offset_minutes=0, interval=interval)
+                        from app.api.polymarket_api import async_get_active_market, async_place_bet
+                        m_next = await async_get_active_market(coin=state['coin'], interval=state['interval'])
                         if m_next and m_next['timestamp'] == signal['timestamp']:
                             target_token = m_next['yes_token'] if signal['direction'] == "YES" else m_next['no_token']
+                            current_step = mg.get_step(state['label'])
+                            order_type, limit_price = ("FOK", 0.99) if current_step == 0 else ("GTC", 0.49 if current_step == 1 else 0.50)
                             
-                            # Determine order type and limit price based on martingale step
-                            current_step = mg.get_step(m_label)
-                            if current_step == 0:
-                                order_type = "FOK"
-                                limit_price = 0.99
-                            elif current_step == 1:
-                                order_type = "GTC"
-                                limit_price = 0.49
-                            else:
-                                order_type = "GTC"
-                                limit_price = 0.50
-
-                            log_info(f"[{m_label}] Attempting {signal['direction']} ({order_type})...")
-                            success = place_bet(target_token, signal['amount'], coin=m_coin, price=limit_price, order_type=order_type)
-                            
+                            success = await async_place_bet(target_token, signal['amount'], coin=state['coin'], price=limit_price, order_type=order_type)
                             if success:
                                 update_virtual_balance(-signal['amount'])
-                                actual_buy_price = get_last_trade_price(target_token) or 0.50
-                                if order_type == "GTC": actual_buy_price = limit_price
-                                
-                                shares = signal['amount'] / actual_buy_price
-                                state['pending_bet'] = {
-                                    "direction": signal['direction'],
-                                    "timestamp": signal['timestamp'],
-                                    "amount": signal['amount'],
-                                    "shares": shares,
-                                    "order_type": order_type
-                                }
-                                # Clear signal
+                                state['pending_bet'] = {"direction": signal['direction'], "timestamp": signal['timestamp'], "amount": signal['amount'], "shares": signal['amount']/limit_price, "order_type": order_type}
                                 state['active_signal'] = None
-                                log_trade(f"[{m_label}] SUCCESS! Placed ${signal['amount']} on {signal['direction']}")
-                                
-                                # Notify Telegram
-                                exec_time = datetime.now().strftime('%H:%M:%S')
-                                send_telegram_notify(
-                                    "🎯  *TRADE EXECUTED*  🎯\n"
-                                    "━━━━━━━━━━━━━━━━━━━━\n"
-                                    f"↕️  *Side:*   {signal['direction']} {'▲' if signal['direction'] == 'YES' else '▼'}\n"
-                                    f"💰  *Bet:*    `${signal['amount']}`\n"
-                                    f"📊  *Market:*  `{m_label}`\n"
-                                    f"⏰  *Time:*    `{exec_time}`\n"
-                                    "━━━━━━━━━━━━━━━━━━━━"
-                                )
-                            else:
-                                if not signal.get('notified_retry'):
-                                    signal['notified_retry'] = True
-                                    send_telegram_notify(
-                                        f"⚠️ *{m_label} Entry Failed!*\n"
-                                        "━━━━━━━━━━━━━━━━━━\n"
-                                        "Liquidity issues or rejection.\n"
-                                        "🔄 *Retrying for 30s...*"
-                                    )
-                    else:
-                        log_warning(f"[{m_label}] Trade window EXPIRED (30s) for {signal['direction']}. No liquidity found.")
-                        send_telegram_notify(
-                            f"❌ *{m_label} AUTO MISSED!*\n"
-                            "━━━━━━━━━━━━━━━━━━\n"
-                            "Window expired after 30s retries.\n"
-                            f"No entry found for {signal['direction']}."
-                        )
-                        state['active_signal'] = None
+                                log_trade(f"[{state['label']}] SUCCESS! Placed ${signal['amount']} on {signal['direction']}")
+                                send_telegram_notify(f"🎯 *TRADE EXECUTED*\n{signal['direction']} ${signal['amount']} in {state['label']}")
+                    
+                    # Expire all signals after selection
+                    for mid in candidates:
+                        market_states[mid]['active_signal'] = None
+            else:
+                # Expire any signals that appeared while a trade is already pending
+                for mid, s in market_states.items():
+                    if s.get('active_signal'): s['active_signal'] = None
 
-            # Update Metadata periodically
             if loop_count % 30 == 0:
                 try:
-                    ui.status_data["balance"] = str(get_balance())
-                    ui.status_data["virtual_balance"] = str(get_virtual_balance())
-                    ui.status_data["matic_balance"] = str(get_matic_balance())
-                    
-                    # Live Price Updates
-                    if PRIMARY_MARKET_ID:
-                        # Find the token for the primary market to get prices
-                        m_coin = PRIMARY_MARKET_ID.split('_')[0]
-                        m_interval = int(PRIMARY_MARKET_ID.split('_')[1].replace('m', ''))
-                        curr_m = get_active_market(coin=m_coin, interval=m_interval)
-                        if curr_m:
-                            y_price = get_last_trade_price(curr_m['yes_token']) or 0.00
-                            ui.status_data["yes_price"] = f"{y_price:.2f}"
-                            ui.status_data["no_price"] = f"{(1.0 - y_price):.2f}"
-
-                except Exception as p_err:
-                    log_network_error("polling status", p_err)
-
-            # --- 3. PRO LOGIC: HEARTBEAT (Every 7s) ---
-            # Activates 'Cancel on Disconnect' safety switch (SDK v0.34.0+)
-            if now_ts - last_heartbeat >= 7:
-                last_heartbeat = now_ts
-                try:
-                    # Run async heartbeat in background thread
-                    asyncio.run(async_send_heartbeat())
-                except Exception as h_err:
-                    logging.error(f"[HEARTBEAT] Task failed: {h_err}")
-
-            # --- 4. AUTO REDEMPTION (~5 Minutes) ---
-            if now_ts - last_redemption_check >= 300:
-                last_redemption_check = now_ts
-                log_info("Running background Auto-Redemption check...")
-                try:
-                    # Scan both primary and funder wallet
-                    wallets = list(set(filter(None, [WALLET_ADDRESS, FUNDER_ADDRESS])))
-                    for wallet in wallets:
-                        redeemables = fetch_redeemable_positions(wallet)
-                        if redeemables:
-                            log_success(f"Auto-Redeem: Found {len(redeemables)} winning positions for {wallet[:10]}...")
-                            for pos in redeemables:
-                                cond_id = pos['condition_id']
-                                idx = pos['outcome_index']
-                                payout = pos['payout']
-                                
-                                log_info(f"Initiating claim for {cond_id[:10]}... (${payout:.2f})")
-                                
-                                # 1. Try Gasless (Paid by Polymarket)
-                                success = gasless_redeem(cond_id, idx, wallet)
-                                
-                                # 2. Fallback to On-Chain (Paid by your MATIC)
-                                if not success:
-                                    log_warning("Gasless claim failed or unavailable. Falling back to on-chain...")
-                                    success = redeem_winnings(cond_id, idx, wallet)
-                                
-                                if success:
-                                    log_success(f"Claim Successful: ${payout:.2f}")
-                                    send_telegram_notify(
-                                        "🎁  *AUTO-CLAIM COMPLETE*  🎁\n"
-                                        "━━━━━━━━━━━━━━━━━━━━\n"
-                                        f"💰  *Payout:*  `${payout:.2f}` USDC.e\n"
-                                        f"👛  *Wallet:*  `{wallet[:6]}...{wallet[-4:]}`\n"
-                                        "━━━━━━━━━━━━━━━━━━━━\n"
-                                        "✨ *Funds added to balance.*"
-                                    )
-                                else:
-                                    log_error(f"Auto-Claim failed for {cond_id[:10]}. Will retry in 5m.")
-                        else:
-                            # log_info(f"No winnings found for {wallet[:10]}...")
-                            pass
-                except Exception as r_err:
-                    log_error(f"Auto-Redemption Task Error: {r_err}")
+                    ui.status_data["balance"] = str(await asyncio.to_thread(get_balance))
+                    ui.status_data["virtual_balance"] = str(await asyncio.to_thread(get_virtual_balance))
+                    ui.status_data["matic_balance"] = str(await asyncio.to_thread(get_matic_balance))
+                except: pass
 
             loop_count += 1
-            time.sleep(1)
+            await asyncio.sleep(1)
 
-        except KeyboardInterrupt:
-            cleanup()
+        except KeyboardInterrupt: cleanup()
         except Exception as e:
             log_error(f"Error in main loop: {e}")
-            time.sleep(5)
+            await asyncio.sleep(5)
 
 if __name__ == "__main__":
-    bot_loop()
+    import asyncio
+    asyncio.run(bot_loop())

@@ -12,8 +12,10 @@ from py_clob_client.clob_types import OrderArgs, OrderType, ApiCreds, MarketOrde
 from py_clob_client.constants import POLYGON
 from py_clob_client.exceptions import PolyApiException
 
-# Setup client lazily
+# Setup clients lazily to reuse connections (Free speed)
 _client = None
+_sync_http = httpx.Client(timeout=10)
+_async_http = httpx.AsyncClient(timeout=10)
 
 def get_clob_client():
     global _client
@@ -44,25 +46,25 @@ def get_active_market(coin="BTC", offset_minutes=0, interval=5):
     url = f"https://gamma-api.polymarket.com/markets/slug/{slug}"
     
     try:
-        with httpx.Client(timeout=10) as client:
-            res = client.get(url)
-            if res.status_code == 200:
-                data = res.json()
-                tokens = data.get("clobTokenIds", [])
-                if isinstance(tokens, str):
-                    import json
-                    try: tokens = json.loads(tokens)
-                    except: tokens = []
-                
-                return {
-                    "market_id": data.get("conditionId"),
-                    "question": data.get("question"),
-                    "yes_token": tokens[0] if len(tokens) > 0 else None,
-                    "no_token": tokens[1] if len(tokens) > 1 else None,
-                    "timestamp": ts_sec,
-                    "interval": interval,
-                    "coin": coin
-                }
+        res = _sync_http.get(url)
+        if res.status_code == 200:
+            data = res.json()
+            tokens = data.get("clobTokenIds", [])
+            if isinstance(tokens, str):
+                try: import orjson as json
+                except ImportError: import json
+                try: tokens = json.loads(tokens)
+                except: tokens = []
+            
+            return {
+                "market_id": data.get("conditionId"),
+                "question": data.get("question"),
+                "yes_token": tokens[0] if len(tokens) > 0 else None,
+                "no_token": tokens[1] if len(tokens) > 1 else None,
+                "timestamp": ts_sec,
+                "interval": interval,
+                "coin": coin
+            }
     except Exception as e:
         logging.error(f"Error fetching sync market for {coin}: {e}")
     return None
@@ -76,25 +78,25 @@ async def async_get_active_market(coin="BTC", offset_minutes=0, interval=5):
     url = f"https://gamma-api.polymarket.com/markets/slug/{slug}"
     
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            res = await client.get(url)
-            if res.status_code == 200:
-                data = res.json()
-                tokens = data.get("clobTokenIds", [])
-                if isinstance(tokens, str):
-                    import json
-                    try: tokens = json.loads(tokens)
-                    except: tokens = []
-                
-                return {
-                    "market_id": data.get("conditionId"),
-                    "question": data.get("question"),
-                    "yes_token": tokens[0] if len(tokens) > 0 else None,
-                    "no_token": tokens[1] if len(tokens) > 1 else None,
-                    "timestamp": ts_sec,
-                    "interval": interval,
-                    "coin": coin
-                }
+        res = await _async_http.get(url)
+        if res.status_code == 200:
+            data = res.json()
+            tokens = data.get("clobTokenIds", [])
+            if isinstance(tokens, str):
+                try: import orjson as json
+                except ImportError: import json
+                try: tokens = json.loads(tokens)
+                except: tokens = []
+            
+            return {
+                "market_id": data.get("conditionId"),
+                "question": data.get("question"),
+                "yes_token": tokens[0] if len(tokens) > 0 else None,
+                "no_token": tokens[1] if len(tokens) > 1 else None,
+                "timestamp": ts_sec,
+                "interval": interval,
+                "coin": coin
+            }
     except Exception as e:
         logging.error(f"Error fetching async market for {coin}: {e}")
     return None
@@ -103,18 +105,16 @@ def get_last_trade_price(token_id):
     """Synchronous version"""
     url = f"https://clob.polymarket.com/last-trade-price?token_id={token_id}"
     try:
-        with httpx.Client(timeout=10) as client:
-            res = client.get(url)
-            return float(res.json().get('price', 0)) if res.status_code == 200 else None
+        res = _sync_http.get(url)
+        return float(res.json().get('price', 0)) if res.status_code == 200 else None
     except: return None
 
 async def async_get_last_trade_price(token_id):
     """Asynchronous version"""
     url = f"https://clob.polymarket.com/last-trade-price?token_id={token_id}"
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            res = await client.get(url)
-            return float(res.json().get('price', 0)) if res.status_code == 200 else None
+        res = await _async_http.get(url)
+        return float(res.json().get('price', 0)) if res.status_code == 200 else None
     except: return None
 
 def place_bet(token_id, amount, coin="BTC", price=0.99, order_type="GTC"):
@@ -199,33 +199,32 @@ async def fetch_redeemable_positions_from_api(wallet_address):
         
     url = f"https://data-api.polymarket.com/positions?user={wallet_address}"
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            res = await client.get(url)
-            if res.status_code == 200:
-                positions = res.json()
-                logging.info(f"Retrieved {len(positions)} positions for {wallet_address}")
-                redeemables = []
-                for pos in positions:
-                    # Check if it's redeemable and has value
-                    is_redeemable = pos.get('redeemable', False)
-                    idx = pos.get('outcomeIndex')
-                    bitmask = 1 << int(idx) if idx is not None else 0
-                    
-                    if is_redeemable and bitmask > 0:
-                        val = float(pos.get("currentValue", 0))
-                        if val > 0:
-                            logging.info(f"Found redeemable: {pos.get('title')} - Value: ${val}")
-                            logging.info(f"Position Data: {pos}")
-                            redeemables.append({
-                                "condition_id": pos.get("conditionId"),
-                                "outcome_index": bitmask,
-                                "payout": val
-                            })
-                logging.info(f"Total redeemables found: {len(redeemables)}")
-                return redeemables
-            else:
-                logging.error(f"Data API Error {res.status_code} for {wallet_address}: {res.text}")
-                return []
+        res = await _async_http.get(url, timeout=15)
+        if res.status_code == 200:
+            positions = res.json()
+            logging.info(f"Retrieved {len(positions)} positions for {wallet_address}")
+            redeemables = []
+            for pos in positions:
+                # Check if it's redeemable and has value
+                is_redeemable = pos.get('redeemable', False)
+                idx = pos.get('outcomeIndex')
+                bitmask = 1 << int(idx) if idx is not None else 0
+                
+                if is_redeemable and bitmask > 0:
+                    val = float(pos.get("currentValue", 0))
+                    if val > 0:
+                        logging.info(f"Found redeemable: {pos.get('title')} - Value: ${val}")
+                        logging.info(f"Position Data: {pos}")
+                        redeemables.append({
+                            "condition_id": pos.get("conditionId"),
+                            "outcome_index": bitmask,
+                            "payout": val
+                        })
+            logging.info(f"Total redeemables found: {len(redeemables)}")
+            return redeemables
+        else:
+            logging.error(f"Data API Error {res.status_code} for {wallet_address}: {res.text}")
+            return []
     except Exception as e:
         logging.error(f"Error fetching redeemable positions: {e}")
     return []

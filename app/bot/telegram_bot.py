@@ -7,7 +7,7 @@ from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKe
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes, ConversationHandler
 from dotenv import load_dotenv
 
-from app.db import async_get_last_n_candles, async_get_24h_stats
+from app.db import async_get_last_n_candles, async_get_stats_period, async_get_recent_trades
 from app.trading.trader import async_get_balance, async_get_virtual_balance, async_update_virtual_balance
 from app.api.polymarket_api import async_get_active_market, async_get_last_trade_price, async_place_bet
 from app.config import INTERVAL, INITIAL_BET_AMOUNT, TELEGRAM_TOKEN, DRY_RUN, COINS
@@ -70,7 +70,7 @@ def get_main_menu():
     rows = [
         [start_stop_btn, t("btn_balance"), t("btn_live")],
         [t("btn_status"), t("btn_manual"), t("btn_history")],
-        [t("btn_settings")] # Removed Help and Daily Report from home
+        [t("btn_trends"), t("btn_settings")]
     ]
     
     # Add Claim if winnings exist
@@ -82,8 +82,8 @@ def get_main_menu():
 
 def get_settings_menu():
     buttons = [
-        [t("btn_report"), t("btn_help")],
-        [t("btn_back")]
+        [t("btn_report"), "📅 7-Day Stats"],
+        [t("btn_help"), t("btn_back")]
     ]
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
@@ -350,17 +350,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     log_info("TG Handler: status hit")
     save_chat_id(update.effective_chat.id)
     
-    # Initialize necessary components
-    mg = Martingale()
     status_icon = "🛑 STOPPED" if os.path.exists("pause.flag") else "▶️ RUNNING"
-    
-    # Load current multi-market config
-    config = {}
-    if os.path.exists("data/market_config.json"):
-        try:
-            with open("data/market_config.json", "r") as f:
-                config = json.load(f)
-        except: pass
 
     now_ts = int(time.time())
     interval_sec = 15 * 60
@@ -369,55 +359,111 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mins, secs = divmod(seconds_until_next, 60)
     
     mg = Martingale()
-    label = "SOL_15m"
-    step = mg.get_step(label)
-    bet = mg.get_bet(label)
 
     msg = (
         f"🖥️  *OG BOTS STATUS*  🖥️\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        f"🚦  *Status:*  {status_icon} {'▶️' if 'RUNNING' in status_icon else '🛑'}\n"
-        f"🛠️  *Mode:*    {'LIVE 💸' if not DRY_RUN else 'SIMULATION 🧪'}\n"
-        f"⏳  *Next:*    `{mins:02d}:{secs:02d}`s\n"
+        f"🚦 *Engine:* {status_icon}\n"
+        f"🛠️ *Mode:*   {'LIVE 💸' if not DRY_RUN else 'SIMULATION 🧪'}\n"
+        f"⏳ *Next:*    `{mins:02d}:{secs:02d}`s\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        f"📍  *Market:*  SOL 15m\n"
-        f"🪜  *Level:*   L{step+1}\n"
-        f"💰  *Next:*    `${bet}`\n"
-        "━━━━━━━━━━━━━━━━━━━━"
     )
+    
+    for c in COINS:
+        label = f"{c}_15m"
+        step = mg.get_step(label)
+        bet = mg.get_bet(label)
+        msg += f"🌟 *{c}*\n"
+        msg += f"  🪜 *Level:*  `L{step+1}`\n"
+        msg += f"  💰 *Next:*   `${bet}`\n"
+        msg += f"┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n"
+        
+    msg += "━━━━━━━━━━━━━━━━━━━━"
     
     await update.message.reply_text(msg, reply_markup=get_main_menu(), parse_mode="Markdown")
 
 
 async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     log_activity("History", update)
-    context.user_data["current_menu"] = "history"
+    save_chat_id(update.effective_chat.id)
+    
+    trades = await async_get_recent_trades(12)
+    
+    msg = (
+        "📜  *RECENT TRADE LOGS*  📜\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+    )
+    
+    if not trades:
+        msg += "📂 *No trade history found yet.*\n"
+    else:
+        for t_data in trades:
+            m_id = t_data['market_id']
+            coin = m_id.split("-")[0].upper() if "-" in m_id else "SOL"
+            
+            from datetime import datetime
+            dt = datetime.fromtimestamp(t_data['timestamp'])
+            time_str = dt.strftime('%m/%d %H:%M')
+            
+            result_icon = "✅ WIN" if t_data['result'] == "WIN" else "❌ LOSS"
+            side_icon = "🟢 UP" if t_data['direction'] == "YES" else "🔴 DOWN"
+            
+            profit = t_data['payout'] - t_data['amount'] if t_data['result'] == "WIN" else -t_data['amount']
+            profit_str = f"{'+' if profit >= 0 else ''}${profit:.2f}"
+            
+            msg += f"🗓 `{time_str}`\n"
+            msg += f"🪙 *{coin}* | {side_icon} | {result_icon}\n"
+            msg += f"💰 *PnL:* `{profit_str}`\n"
+            msg += "┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n"
+    
+    msg += "━━━━━━━━━━━━━━━━━━━━"
+    await update.message.reply_text(msg, reply_markup=get_main_menu(), parse_mode="Markdown")
+
+async def trends(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    log_activity("Trends", update)
     save_chat_id(update.effective_chat.id)
     
     tf = 15
-    closes = await async_get_last_n_candles(10, interval=tf)
+    msg = f"📊 *{tf}M MARKET TRENDS (Last 10)*\n━━━━━━━━━━━━━━━━━━━━\n"
     
-    if not closes:
-        await update.message.reply_text(
-            f"📂 *No {tf}m candle history found.*", 
-            reply_markup=get_history_keyboard(tf),
-            parse_mode="Markdown"
-        )
-        return
+    async def fetch_candles(c):
+        active = await async_get_active_market(coin=c, interval=tf)
+        if not active: return (c, [], 0)
+        try:
+            candles = await async_get_last_n_candles(10, interval=tf, coin=c)
+            last_ts = candles[-1]['timestamp'] if candles else 0
+        except Exception as e:
+            logging.error(f"Error fetching candles for {c}: {e}")
+            candles = []
+            last_ts = 0
+        return (c, candles, last_ts)
+
+    tasks = [fetch_candles(c) for c in COINS]
+    results = await asyncio.gather(*tasks)
     
-    msg = (
-        f"📊  *{tf}M HISTORY LOG*  📊\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-    )
-    theme = get_theme()
-    for i, c in enumerate(reversed(closes)):
-        p = c['close_price']
-        from datetime import datetime
-        time_str = datetime.fromtimestamp(c['timestamp']).strftime('%H:%M')
+    from datetime import datetime
+    for c, candles, last_ts in results:
+        trend_str = ""
+        # Reverse to show most recent on the right
+        for candle in candles[::-1]:
+            price = candle.get('close_price', 0.5)
+            if price >= 0.5:
+                trend_str += "🟢"
+            else:
+                trend_str += "🔴"
+        
+        if not trend_str:
+            trend_str = "N/A"
+        
+        time_label = ""
+        if last_ts > 0:
+            dt = datetime.fromtimestamp(last_ts)
+            time_label = f" ({dt.strftime('%H:%M')})"
             
-        direction = "UP  ▲" if p > 0.5 else "DOWN ▼"
-        msg += f" `{i+1:02d}` » {direction} » `{p:.4f}` » `{time_str}`\n"
-    
+        msg += f" {c}{time_label}\n"
+        msg += f" ▎ `{trend_str}`\n"
+        msg += "┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n"
+
     msg += "━━━━━━━━━━━━━━━━━━━━"
     await update.message.reply_text(msg, reply_markup=get_main_menu(), parse_mode="Markdown")
 
@@ -483,34 +529,72 @@ async def live_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_chat_id(update.effective_chat.id)
     
     tf = 15
-    coin = "SOL"
-    active = await async_get_active_market(coin=coin, offset_minutes=0, interval=tf)
-    if not active:
-        await update.message.reply_text(f"❌ No active {tf}m market found.")
+    msg = f"📉 *{tf}M LIVE MULTI-ODDS*\n━━━━━━━━━━━━━━━━━━\n"
+    
+    async def fetch_odds(c):
+        active = await async_get_active_market(coin=c, offset_minutes=0, interval=tf)
+        if not active: return None
+        y = await async_get_last_trade_price(active['yes_token'])
+        n = await async_get_last_trade_price(active['no_token'])
+        return (c, y, n)
+        
+    tasks = [fetch_odds(c) for c in COINS]
+    results = await asyncio.gather(*tasks)
+    
+    found = False
+    for res in results:
+        if res:
+            found = True
+            c, y, n = res
+            msg += f"🌟 *{c}*\n"
+            msg += f"  🟢 *YES:* `${y:.2f}`  |  🔴 *NO:* `${n:.2f}`\n"
+            msg += "┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n"
+            
+    if not found:
+        await update.message.reply_text(f"❌ No active {tf}m markets found.", reply_markup=get_main_menu())
         return
+        
+    msg += "━━━━━━━━━━━━━━━━━━"
     
-    yes_price = await async_get_last_trade_price(active['yes_token'])
-    no_price = await async_get_last_trade_price(active['no_token'])
-    
-    msg = (
-        f"📉 *{tf}M LIVE ODDS*\n"
-        "━━━━━━━━━━━━━━━━━━\n"
-        f"📍 *Market:* {coin} Up/Down\n"
-        f"📅 {active.get('question', '').split('Up or Down ')[-1]}\n\n"
-        f"🟢 *YES ▲:* `{yes_price}`\n"
-        f"🔴 *NO  ▼:* `{no_price}`\n"
-        "━━━━━━━━━━━━━━━━━━"
-    )
-    
-    # Inline Refresh button directly on the message as requested (Kaam ki cheez)
     keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("🔄 Refresh Price", callback_data="refresh_live")
+        InlineKeyboardButton("🔄 Refresh Prices", callback_data="refresh_live")
     ]])
     
     await update.message.reply_text(msg, reply_markup=keyboard, parse_mode="Markdown")
     # Also reset keyboard to main menu to ensure user isn't stuck
     await update.message.reply_text("👇 Navigation", reply_markup=get_main_menu())
 
+async def daily_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    log_activity("Daily Report", update)
+    save_chat_id(update.effective_chat.id)
+    await send_stats_report(update, days=1)
+
+async def weekly_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    log_activity("Weekly Report", update)
+    save_chat_id(update.effective_chat.id)
+    await send_stats_report(update, days=7)
+
+async def send_stats_report(update: Update, days=1):
+    stats = await async_get_stats_period(days=days)
+    
+    title = "📊 TODAY'S PERFORMANCE" if days == 1 else "🏛️ 7-DAY PERFORMANCE SUMMARY"
+    total = stats["wins"] + stats["losses"]
+    wr = (stats["wins"] / total * 100) if total > 0 else 0
+    pnl = stats["total_profit"]
+    
+    msg = (
+        f"{title}\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        f"📅 *Period:* `{days} Day(s)`\n"
+        f"✅ *Wins:*   `{stats['wins']}`\n"
+        f"❌ *Loss:*   `{stats['losses']}`\n"
+        f"📊 *WinRate:* `{wr:.1f}%`\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        f"💹 *Volume:* `${stats['total_volume']:.2f}`\n"
+        f"💰 *Total PnL:* ` {'+' if pnl >= 0 else ''}${pnl:.2f} `\n"
+        "━━━━━━━━━━━━━━━━━━"
+    )
+    await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=get_main_menu())
 
 async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     log_activity("Button: Settings", update)
@@ -518,47 +602,15 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_chat_id(update.effective_chat.id)
     
     msg = (
-        f"🛠 *{t('nickname')} SETTINGS*\n"
+        f"🛠 *OG BOTS SETTINGS*\n"
         "━━━━━━━━━━━━━━━━━━\n"
         f"⚙️ *Mode:* {'LIVE 💸' if not DRY_RUN else 'SIMULATION 🧪'}\n"
-        "📡 *Strat:* SOL Reversal Alpha\n"
-        "⏱ *Window:* Dedicated 15m\n"
+        "📡 *Strat:* Reversal Alpha\n"
+        "⏱ *Window:* 15m Frame\n"
         "━━━━━━━━━━━━━━━━━━"
     )
     
     await update.message.reply_text(msg, reply_markup=get_settings_menu(), parse_mode="Markdown")
-
-# Obsolete local logic removed
-
-async def daily_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    log_activity("Daily Report", update)
-    save_chat_id(update.effective_chat.id)
-    
-    stats5 = await async_get_24h_stats(interval=5)
-    stats15 = await async_get_24h_stats(interval=15)
-    
-    def format_tf_box(s, tf):
-        total = s["wins"] + s["losses"]
-        wr = (s["wins"] / total * 100) if total > 0 else 0
-        return (
-            f"📅 *{tf}M TF*\n"
-            f"✅ *Wins:* {s['wins']}\n"
-            f"❌ *Loss:* {s['losses']}\n"
-            f"📊 *WR:* `{wr:.1f}%`\n"
-            f"💰 *PnL:* ` {'+' if s['total_profit'] >=0 else ''}${s['total_profit']:.2f} `\n"
-        )
-
-    msg = (
-        "📊 *DAILY REPORT*\n"
-        "━━━━━━━━━━━━━━━━━━\n"
-        f"{format_tf_box(stats5, 5)}\n"
-        f"{format_tf_box(stats15, 15)}\n"
-        "━━━━━━━━━━━━━━━━━━\n"
-        f"📈 *Vol:* `${stats5['total_volume'] + stats15['total_volume']:.2f}`\n"
-        f"💵 *Total:* `${stats5['total_profit'] + stats15['total_profit']:.2f}`\n"
-        "━━━━━━━━━━━━━━━━━━"
-    )
-    await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
     log_activity("Back", update)
@@ -605,28 +657,10 @@ async def manual_trade(update: Update, context: ContextTypes.DEFAULT_TYPE):
     log_activity("Manual Trade", update)
     context.user_data["current_menu"] = "manual"
     save_chat_id(update.effective_chat.id)
-    
-    # Default TF to first enabled market if not set
-    if "manual_tf" not in context.user_data:
-        m_config = {}
-        if os.path.exists("data/market_config.json"):
-            try:
-                with open("data/market_config.json", "r") as f:
-                    m_config = json.load(f)
-            except: pass
-        for t_val in [5, 15]:
-            matched = False
-            for c in COINS:
-                if m_config.get(f"{c.lower()}_{t_val}m"):
-                    context.user_data["manual_tf"] = t_val
-                    matched = True
-                    break
-            if matched: break
             
     tf = 15
-    coin = "SOL"
+    coin = context.user_data.get("manual_coin", "SOL")
     active = await async_get_active_market(coin=coin, interval=tf)
-    market_name = active['question'] if active else f"No {coin} {tf}M Market"
     
     msg = (
         "🎯 *MANUAL TRADE*\n"
@@ -635,10 +669,15 @@ async def manual_trade(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📍 *Market:* {coin} Up/Down\n"
         f"📅 {active.get('question', '').split('Up or Down ')[-1] if active else 'No market'}\n"
         "━━━━━━━━━━━━━━━━━━\n"
-        "Select an amount to inject 👇"
+        "Change the coin below, or select an amount to inject 👇"
     )
     
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"{'✅ ' if coin == c else ''}{c}", callback_data=f"set_manual_{c}") for c in COINS]
+    ])
+    
     await update.message.reply_text(msg, reply_markup=get_manual_menu(tf), parse_mode="Markdown")
+    await update.message.reply_text("🪙 Coin Selection:", reply_markup=keyboard)
 
 async def toggle_manual_tf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     log_activity("Toggle Manual TF", update)
@@ -670,8 +709,8 @@ async def handle_fixed_manual_trade(update: Update, context: ContextTypes.DEFAUL
     except:
         return
 
-    tf = context.user_data.get("manual_tf", 5)
-    coin = context.user_data.get("manual_coin", "BTC")
+    tf = context.user_data.get("manual_tf", 15)
+    coin = context.user_data.get("manual_coin", "SOL")
     active = await async_get_active_market(coin=coin, interval=tf)
     if not active:
         await update.message.reply_text(f"❌ No active {coin} {tf}m market found.")
@@ -693,7 +732,6 @@ async def handle_fixed_manual_trade(update: Update, context: ContextTypes.DEFAUL
     
     msg_waiting = await update.message.reply_text(f"⏳ Placing *${amount}* on *{direction}*...", parse_mode="Markdown")
     
-    coin = context.user_data.get("manual_coin", "BTC")
     success = await async_place_bet(token, amount, coin=coin)
     
     if success:
@@ -701,6 +739,8 @@ async def handle_fixed_manual_trade(update: Update, context: ContextTypes.DEFAUL
             with open("data/manual_bet.json", "w") as f:
                 signal_dir = "YES" if direction_str == "up" else "NO"
                 json.dump({
+                    "coin": coin,
+                    "market_id": active['market_id'],
                     "direction": signal_dir, 
                     "timestamp": active['timestamp'], 
                     "amount": amount,
@@ -751,29 +791,37 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
     
     if data == "refresh_live":
-        # Handle Inline Live Price Refresh
         tf = 15
-        coin = "SOL"
-        active = await async_get_active_market(coin=coin, offset_minutes=0, interval=tf)
-        if not active:
+        msg = f"📉 *{tf}M LIVE MULTI-ODDS*\n━━━━━━━━━━━━━━━━━━\n"
+        
+        async def fetch_odds(c):
+            active = await async_get_active_market(coin=c, offset_minutes=0, interval=tf)
+            if not active: return None
+            y = await async_get_last_trade_price(active['yes_token'])
+            n = await async_get_last_trade_price(active['no_token'])
+            return (c, y, n)
+            
+        tasks = [fetch_odds(c) for c in COINS]
+        results = await asyncio.gather(*tasks)
+        
+        found = False
+        for res in results:
+            if res:
+                found = True
+                c, y, n = res
+                msg += f"🌟 *{c}*\n"
+                msg += f"  🟢 *YES:* `${y:.2f}`  |  🔴 *NO:* `${n:.2f}`\n"
+                msg += "┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n"
+                
+        if not found:
             await query.answer("❌ Market error", show_alert=True)
             return
-
-        yes_price = await async_get_last_trade_price(active['yes_token'])
-        no_price = await async_get_last_trade_price(active['no_token'])
+            
+        msg += "━━━━━━━━━━━━━━━━━━\n"
+        msg += f"_Updated: {time.strftime('%H:%M:%S')}_"
         
-        msg = (
-            f"📉 *{tf}M LIVE ODDS*\n"
-            "━━━━━━━━━━━━━━━━━━\n"
-            f"📍 *Market:* {coin} Up/Down\n"
-            f"📅 {active.get('question', '').split('Up or Down ')[-1]}\n\n"
-            f"🟢 *YES ▲:* `{yes_price}`\n"
-            f"🔴 *NO  ▼:* `{no_price}`\n"
-            "━━━━━━━━━━━━━━━━━━\n"
-            f"_Updated: {time.strftime('%H:%M:%S')}_"
-        )
         keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("🔄 Refresh Price", callback_data="refresh_live")
+            InlineKeyboardButton("🔄 Refresh Prices", callback_data="refresh_live")
         ]])
         
         try:
@@ -781,6 +829,18 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer("✅ Updated!")
         except:
             await query.answer("Prices are already up to date.")
+        return
+        
+    if data.startswith("set_manual_"):
+        coin = data.split("_")[2]
+        context.user_data["manual_coin"] = coin
+        await query.answer(f"✅ Selected Token: {coin}")
+        
+        # update inline keyboard to show active choice
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"{'✅ ' if coin == c else ''}{c}", callback_data=f"set_manual_{c}") for c in COINS]
+        ])
+        await query.edit_message_text("🪙 Coin Selection:", reply_markup=keyboard)
         return
 
     if not data.startswith(("mt_", "toggle_")):
@@ -1089,11 +1149,13 @@ def run_telegram_bot():
     app.add_handler(MessageHandler(filters.Regex(r("btn_status")), status))
     app.add_handler(MessageHandler(filters.Regex(r("btn_balance")), balance))
     app.add_handler(MessageHandler(filters.Regex(r("btn_history")), history))
+    app.add_handler(MessageHandler(filters.Regex(r("btn_trends")), trends))
     app.add_handler(MessageHandler(filters.Regex(r("btn_manual")), manual_trade))
     app.add_handler(MessageHandler(filters.Regex(r("btn_settings")), settings_command))
     app.add_handler(MessageHandler(filters.Regex(r("btn_back_settings")), settings_command))
     app.add_handler(MessageHandler(filters.Regex(r("btn_reset")), reset_martingale))
     app.add_handler(MessageHandler(filters.Regex(r("btn_report")), daily_report))
+    app.add_handler(MessageHandler(filters.Regex(r"📅 7-Day Stats"), weekly_report))
     app.add_handler(MessageHandler(filters.Regex(r("btn_live")), live_price))
     app.add_handler(MessageHandler(filters.Regex(r("btn_claim")), claim_winnings))
 
@@ -1106,6 +1168,7 @@ def run_telegram_bot():
     # Multi-market and legacy toggles removed
     
     app.add_handler(MessageHandler(filters.Regex(r("btn_help")), help_command))
+    app.add_handler(MessageHandler(filters.Regex(r"📅 7-Day Stats"), weekly_report))
     app.add_handler(CallbackQueryHandler(button_callback))
     
     # Schedule notification checker (every 5 seconds)

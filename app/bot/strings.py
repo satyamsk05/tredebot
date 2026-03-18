@@ -23,6 +23,7 @@ STRINGS = {
         "btn_back": "🔙 Back",
         "btn_reset": "🔄 Reset L1",
         "btn_report": "📊 Daily Report",
+        "btn_trends": "🕯️ Trends",
         "btn_help": "🆘 Help",
         "btn_claim": "🎁 Claim Winnings",
         "pending_claims": "🎁 Pending Claims: *${amount}*",
