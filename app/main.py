@@ -124,7 +124,7 @@ async def bot_loop():
     for m in POLL_MARKETS:
         coin = m['coin']
         if coin not in ui.status_data["markets"]:
-            ui.status_data["markets"][coin] = {"yes": "0.00", "no": "0.00", "trend": ".....", "status": "Ready"}
+            ui.status_data["markets"][coin] = {"yes": "0.00", "no": "0.00", "status": "Ready"}
 
     async def dashboard_price_poller():
         """Background task to fetch prices for all coins periodically."""
@@ -185,12 +185,6 @@ async def bot_loop():
         interval_sec = m_interval * 60
         m_floor_ts = (now_ts // interval_sec) * interval_sec
         m_label = m['label']
-
-        # Update Trend visualization in UI
-        if loop_count % 30 == 0:
-            candles = await asyncio.to_thread(get_last_n_candles, 5, interval=m_interval, coin=m_coin)
-            trend_str = "".join(["🟢" if c['close_price'] > 0.5 else "🔴" for c in reversed(candles)])
-            ui.status_data["markets"][m_coin]["trend"] = trend_str.ljust(5, ".")
 
         if m_id == primary_id:
             next_boundary = m_floor_ts + interval_sec

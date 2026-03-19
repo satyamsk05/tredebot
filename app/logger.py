@@ -91,22 +91,20 @@ class SimpleLogger:
         frame.append(f"{W}  " + "─"*(self.width-4))
 
         # 2. MULTI-COIN TABLE
-        table_header = f"  {W}ASSET   |  YES    |  NO     |  TREND (Last 5) |  SIGNAL / STATUS{W}"
+        table_header = f"  {W}ASSET   |  YES    |  NO     |  SIGNAL / STATUS{W}"
         frame.append(table_header)
-        frame.append(f"  {W}--------|---------|---------|-----------------|------------------{W}")
+        frame.append(f"  {W}--------|---------|---------|----------------------------------{W}")
         
         coins = ["BTC", "ETH", "SOL", "XRP"]
         m_data = self.status_data.get("markets", {})
         for c in coins:
-            data = m_data.get(c, {"yes": "0.00", "no": "0.00", "trend": ".....", "status": "Scanning"})
+            data = m_data.get(c, {"yes": "0.00", "no": "0.00", "status": "Scanning"})
             y_p = f"{G}${data.get('yes', '0.00')}{W}"
             n_p = f"{R}${data.get('no', '0.00')}{W}"
-            trend_raw = data.get('trend', '.....')
-            trend = trend_raw.replace("🟢", f"{G}●{W}").replace("🔴", f"{R}●{W}").replace(".", f"{W}○{W}")
             status = data.get('status', 'Scanning')
             st_color = Y if "Signal" in status else (G if "WON" in status else (R if "LOST" in status else W))
             
-            row = f"  {W}{c:<7} | {y_p:<15} | {n_p:<15} | {trend:<23} | {st_color}{status}{W}"
+            row = f"  {W}{c:<7} | {y_p:<15} | {n_p:<15} | {st_color}{status}{W}"
             frame.append(row)
 
         frame.append(f"{C}" + "─"*self.width + f"{W}")
