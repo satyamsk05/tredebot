@@ -229,14 +229,14 @@ async def bot_loop():
                                 update_virtual_balance(shares * 1.0)
                                 ui.status_data["markets"][m_coin]["status"] = "✅ WON"
                                 trade_res = "WIN"
-                                send_telegram_notify(f"✅ *TRADE WON*\nAsset: {m_label}\nResult: {dir_bet} @ {close_price}\nNext: Back to Level 1")
+                                send_telegram_notify(f"✅ *TRADE WON*\n\n• Asset: `{m_label}`\n• PnL:  `+{shares*1.0:.2f} USDC` \n• Next: Back to Level 1")
                             else:
                                 log_error(f"[{m_label}] Trade LOST! ({dir_bet}, Price: {close_price})")
                                 mg.lose(m_label)
                                 ui.status_data["markets"][m_coin]["status"] = "❌ LOST"
                                 trade_res = "LOSS"
                                 next_step = mg.get_step(m_label)
-                                send_telegram_notify(f"❌ *TRADE LOST*\nAsset: {m_label}\nResult: {dir_bet} @ {close_price}\nNext: Martingale Level {next_step+1}")
+                                send_telegram_notify(f"❌ *TRADE LOST*\n\n• Asset: `{m_label}`\n• Step:  Martingale Level {next_step+1}\n• Info:  Locking Asset for Recovery")
                             
                             outcome_idx = 1 if dir_bet == "YES" else 2
                             await asyncio.to_thread(save_trade, timestamp=int(time.time()), market_id=closed_market['market_id'], direction=dir_bet, amount=bet_amount, result=trade_res, payout=bet_amount/limit_price if trade_res == "WIN" else 0, order_type=pending.get('order_type', "AUTO"), interval=m_interval, outcome_index=outcome_idx if trade_res == "WIN" else None)
@@ -312,22 +312,28 @@ async def bot_loop():
             
             if not any_pending:
                 candidates = [m_id for m_id, s in market_states.items() if s.get('active_signal')]
+                
+                # RECOVERY LOCK: If ANY coin is in Martingale recovery (step > 0), lock the system to that coin!
+                # This ensures we don't start new trades on ETH if BTC is currently trying to recover a loss.
+                recovery_label = next((m['label'] for m in POLL_MARKETS if mg.get_step(m['label']) > 0), None)
+                ui.status_data["recovery_lock"] = recovery_label if recovery_label else "NONE"
+                
+                if recovery_label:
+                    # Filter candidates to ONLY show the recovery coin
+                    candidates = [m for m in candidates if market_states[m]['label'] == recovery_label]
+                    if not candidates:
+                        # System is locked waiting for the recovery coin's signal
+                        if loop_count % 60 == 0:
+                            log_info(f"Recovery Lock: System is WAITING for {recovery_label} signal.")
+                
                 if candidates:
-                    # RECOVERY PRIORITY: If a coin is in Martingale recovery (step > 0), prioritize it!
-                    recovery_mids = [m_id for m_id in candidates if mg.get_step(market_states[m_id]['label']) > 0]
-                    
-                    if recovery_mids:
-                        chosen_m_id = recovery_mids[0]
-                        log_info(f"Recovery Priority: Sticking to {chosen_m_id} to recoup loss.")
+                    # Selection from filtered candidates
+                    sol_candidates = [m for m in candidates if "sol_" in m]
+                    if sol_candidates:
+                        chosen_m_id = sol_candidates[0]
                     else:
-                        # PRO LOGIC: SOLONA priority (if no recovery needed)
-                        sol_candidates = [m for m in candidates if "sol_" in m]
-                        if sol_candidates:
-                            chosen_m_id = sol_candidates[0]
-                            log_info(f"Priority Signal: Overriding selection for {chosen_m_id}")
-                        else:
-                            import random
-                            chosen_m_id = random.choice(candidates)
+                        import random
+                        chosen_m_id = random.choice(candidates)
                         
                     state = market_states[chosen_m_id]
                     signal = state['active_signal']

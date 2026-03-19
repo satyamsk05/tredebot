@@ -63,20 +63,21 @@ class SimpleLogger:
         frame.append(f"{W}  " + "─"*(self.width-4))
         frame.append(f"{W}    {Y}PREVIEW — USE AT OWN RISK | MULTI-ASSET ALPHA STRATEGY{W}")
         
+        # 1. HEADER
         timestamp = datetime.now().strftime('%H:%M:%S')
         title = f" {W}TRADING TERMINAL v4.1 PRO - {timestamp} "
         left_p = (self.width - vlen(title)) // 2
         frame.append(f"{C}" + "─"*left_p + title + "─"*(self.width - left_p - vlen(title)) + f"{W}")
         
-        # Row 1: Status Details
-        bal = f"{W}USDC: {G}${self.status_data['balance']} {W}| {C}VIRT: {G}${self.status_data.get('virtual_balance', '0.0')} {W}| {W}GAS: {Y}{self.status_data.get('matic_balance', '0.0')} MATIC"
-        startup = self.status_data.get("startup_status", "Ready")
-        st_color = Y if "/3" in startup else G
-        st_str = f"{W}UPTIME: {st_color}{startup}{W}"
+        # Status Details
+        bal_str = f"{W}USDC: {G}${self.status_data['balance']}{W} | {W}GAS: {Y}{self.status_data.get('matic_balance', '0.0')}{W}"
+        rec_lock = self.status_data.get("recovery_lock", "NONE")
+        rec_color = R if rec_lock != "NONE" else G
+        rec_str = f"{W}RECOVERY: {rec_color}{rec_lock}{W}"
         
-        l1 = f"  {bal}"
-        l1 += " " * max(1, self.width - vlen(l1) - vlen(st_str) - 2)
-        l1 += f"{st_str}  "
+        l1 = f"  {bal_str}"
+        l1 += " " * max(1, self.width - vlen(l1) - vlen(rec_str) - 2)
+        l1 += f"{rec_str}  "
         frame.append(l1)
 
         # Row 2: Progress Bar
