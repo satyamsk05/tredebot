@@ -389,7 +389,16 @@ async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     log_activity("History", update)
     save_chat_id(update.effective_chat.id)
     
-    trades = await async_get_recent_trades(12)
+    trades = await async_get_recent_trades(20)
+    
+    # Calculate stats from trades being shown
+    wins = sum(1 for t in trades if t['result'] == "WIN")
+    losses = sum(1 for t in trades if t['result'] == "LOSS")
+    total_profit = sum((t['payout'] - t['amount']) if t['result'] == "WIN" else -t['amount'] for t in trades)
+    
+    # Format Summary
+    profit_sign = "+" if total_profit >= 0 else ""
+    summary_line = f"🏆 {wins}W  💀 {losses}L  💰 {profit_sign}${total_profit:.1f}"
     
     msg = (
         "📜  *RECENT TRADE LOGS*  📜\n"
@@ -418,6 +427,8 @@ async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg += f"💰 *PnL:* `{profit_str}`\n"
             msg += "┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n"
     
+    msg += "━━━━━━━━━━━━━━━━━━━━\n"
+    msg += f"📊 *LOG SUMMARY:* {summary_line}\n"
     msg += "━━━━━━━━━━━━━━━━━━━━"
     await update.message.reply_text(msg, reply_markup=get_main_menu(), parse_mode="Markdown")
 
