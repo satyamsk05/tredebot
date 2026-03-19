@@ -4,7 +4,7 @@ import logging
 import time
 import asyncio
 from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes, ConversationHandler
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes, ConversationHandler, JobQueue
 from dotenv import load_dotenv
 
 from app.db import async_get_last_n_candles, async_get_stats_period, async_get_recent_trades
@@ -85,7 +85,8 @@ def get_main_menu():
 def get_settings_menu():
     buttons = [
         [t("btn_report"), "📅 7-Day Stats"],
-        [t("btn_help"), t("btn_back")]
+        [t("btn_reset"), t("btn_help")],
+        [t("btn_back")]
     ]
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
@@ -1135,7 +1136,7 @@ def run_telegram_bot():
         pattern = re.escape(STRINGS["en"].get(key, key))
         return f"(?i)({pattern})"
     
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).job_queue(JobQueue()).build()
     
     # Conversation Handler for Manual Trades
     manual_conv = ConversationHandler(
@@ -1192,4 +1193,10 @@ def run_telegram_bot():
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
-    run_telegram_bot()
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        run_telegram_bot()
+    except RuntimeError:
+        # Fallback if loop already exists or other loop issues
+        run_telegram_bot()
