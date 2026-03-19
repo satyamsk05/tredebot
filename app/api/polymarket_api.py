@@ -126,22 +126,22 @@ def place_bet(token_id, amount, coin="BTC", price=0.99, order_type="GTC"):
         # Determine if it's a "market" order (FOK with high price) or a true "limit" order
         is_limit = price < 0.90
         
+        # Calculate size and create order args
+        size = round(amount / price, 2)
+        order_args = OrderArgs(
+            token_id=token_id, 
+            price=price,
+            size=size,
+            side="BUY"
+        )
+        signed_order = client.create_order(order_args)
+
         if not is_limit:
             logging.info(f"[{coin}] Placing Market-Fill order: ${amount} for token {token_id}")
-            # Use FOK for market-like behavior if requested, otherwise GTC
             actual_order_type = OrderType.FOK if order_type == "FOK" else OrderType.GTC
-            resp = client.post_order(signed_order, actual_order_type, post_only=is_limit) # Pro Logic: Post-Only for Limit orders
+            resp = client.post_order(signed_order, actual_order_type, post_only=False)
         else:
             logging.info(f"[{coin}] Placing Limit Order (Post-Only): ${amount} at ${price} for token {token_id}")
-            # Calculate size in base tokens
-            size = round(amount / price, 2)
-            order_args = OrderArgs(
-                token_id=token_id, 
-                price=price,
-                size=size,
-                side="BUY"
-            )
-            signed_order = client.create_order(order_args)
             resp = client.post_order(signed_order, OrderType.GTC, post_only=True) # Maker Rebate active!
             
         return resp and resp.get("success")
