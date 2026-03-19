@@ -37,8 +37,8 @@ logging.getLogger("apscheduler").setLevel(logging.WARNING)
 
 # Global Cache for Winnings (to show on Main Menu)
 _cached_unclaimed = 0.0
-# Track start time for 'Session-Only' Trends
-BOT_START_TIME = time.time()
+# Track start time for 'Session-Only' Trends (Aligned to 15m interval start)
+BOT_START_TIME = (int(time.time()) // 900) * 900
 
 def log_info(msg):
     logging.info(f"UI INFO: {msg}")

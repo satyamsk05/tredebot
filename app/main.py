@@ -24,7 +24,8 @@ from app.bot.telegram_bot import async_notify_fill
 os.makedirs("logs", exist_ok=True)
 os.makedirs("data", exist_ok=True)
 
-BOT_START_TIME = time.time()
+# Track session start (Aligned to 15m interval start)
+BOT_START_TIME = (int(time.time()) // 900) * 900
 
 # Configure logging to file only (Console is managed by SimpleLogger)
 logging.basicConfig(
