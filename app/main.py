@@ -24,6 +24,8 @@ from app.bot.telegram_bot import async_notify_fill
 os.makedirs("logs", exist_ok=True)
 os.makedirs("data", exist_ok=True)
 
+BOT_START_TIME = time.time()
+
 # Configure logging to file only (Console is managed by SimpleLogger)
 logging.basicConfig(
     level=logging.INFO,
@@ -113,15 +115,32 @@ async def bot_loop():
     
     # Initialize UI state
     ui.status_data["balance"] = str(get_balance())
-    first_m_label = POLL_MARKETS[0]['label'] if POLL_MARKETS else "SOL_15m"
-    ui.status_data["active_market"] = first_m_label
-    ui.status_data["martingale_step"] = mg.get_step(first_m_label)
-    ui.status_data["bet_amount"] = mg.get_bet(first_m_label)
-    ui.status_data["pending_trade"] = "None"
+    ui.status_data["virtual_balance"] = str(get_virtual_balance())
+    ui.status_data["matic_balance"] = str(matic_bal)
+    
+    # Initialize market table in UI
+    for m in POLL_MARKETS:
+        coin = m['coin']
+        if coin not in ui.status_data["markets"]:
+            ui.status_data["markets"][coin] = {"yes": "0.00", "no": "0.00", "trend": ".....", "status": "Ready"}
 
-    loop_count = 0
-    matic_bal = get_matic_balance()
-    log_info(f"System Initialized. Signer MATIC Balance: {matic_bal} MATIC")
+    async def dashboard_price_poller():
+        """Background task to fetch prices for all coins periodically."""
+        from app.api.polymarket_api import async_get_active_market, async_get_last_trade_price
+        while True:
+            try:
+                for coin in COINS:
+                    m_info = await async_get_active_market(coin=coin.upper(), interval=15)
+                    if m_info:
+                        y_p = await async_get_last_trade_price(m_info['yes_token'])
+                        if y_p is not None:
+                            ui.status_data["markets"][coin.upper()]["yes"] = f"{y_p:.2f}"
+                            ui.status_data["markets"][coin.upper()]["no"] = f"{(1-y_p):.2f}"
+                ui.update()
+            except Exception: pass
+            await asyncio.sleep(15) # Pulse every 15s to avoid rate limits
+
+    asyncio.create_task(dashboard_price_poller())
 
     # Start Telegram Bot
     if sys.platform == "win32":
@@ -165,10 +184,16 @@ async def bot_loop():
         m_floor_ts = (now_ts // interval_sec) * interval_sec
         m_label = m['label']
 
+        # Update Trend visualization in UI
+        if loop_count % 30 == 0:
+            candles = await asyncio.to_thread(get_last_n_candles, 5, interval=m_interval, coin=m_coin)
+            trend_str = "".join(["🟢" if c['close_price'] > 0.5 else "🔴" for c in reversed(candles)])
+            ui.status_data["markets"][m_coin]["trend"] = trend_str.ljust(5, ".")
+
         if m_id == primary_id:
             next_boundary = m_floor_ts + interval_sec
             log_countdown(next_boundary - now_ts)
-            ui.status_data["startup_status"] = f"{state['startup_candles']}/3" if state['startup_candles'] < 3 else "Ready"
+            ui.status_data["startup_status"] = f"{state['startup_candles']}/3 h" if state['startup_candles'] < 3 else f"{int((time.time()-BOT_START_TIME)/3600)}h"
             ui.update()
 
         is_resume_catchup = not os.path.exists("pause.flag") and m_floor_ts > state.get('processed_ts', 0) and (now_ts - m_floor_ts) < 300
@@ -179,6 +204,7 @@ async def bot_loop():
                 state['last_ts'] = m_floor_ts
             state['processed_ts'] = m_floor_ts
             
+            ui.status_data["markets"][m_coin]["status"] = "Scanning..."
             log_info(f"[{m_label}] BOUNDARY TRIGGER - Processing...")
             
             try:
@@ -204,12 +230,12 @@ async def bot_loop():
                                 mg.win(m_label)
                                 shares = pending.get('shares', bet_amount / limit_price)
                                 update_virtual_balance(shares * 1.0)
-                                if pending.get('order_type') == "Manual Limit":
-                                    asyncio.create_task(async_notify_fill(coin=m_coin, direction=dir_bet, amount=bet_amount, price=limit_price))
+                                ui.status_data["markets"][m_coin]["status"] = "✅ WON"
                                 trade_res = "WIN"
                             else:
                                 log_error(f"[{m_label}] Trade LOST! ({dir_bet}, Price: {close_price})")
                                 mg.lose(m_label)
+                                ui.status_data["markets"][m_coin]["status"] = "❌ LOST"
                                 trade_res = "LOSS"
                             
                             outcome_idx = 1 if dir_bet == "YES" else 2
@@ -219,7 +245,7 @@ async def bot_loop():
                         if m_id == primary_id: print_result_banner(trade_res, market_dir)
                         await asyncio.to_thread(save_candle, market_id=closed_market['market_id'], token_id=yes_token, timestamp=closed_market['timestamp'], close_price=close_price, interval=m_interval, coin=m_coin)
                         
-                        closes_candles = await asyncio.to_thread(get_last_n_candles, 4, interval=m_interval)
+                        closes_candles = await asyncio.to_thread(get_last_n_candles, 4, interval=m_interval, coin=m_coin)
                         closes = [c['close_price'] for c in closes_candles]
                         trade_signal = check_signal(closes)
                         
@@ -230,7 +256,11 @@ async def bot_loop():
                                 next_market = await async_get_active_market(coin=m_coin, offset_minutes=0, interval=m_interval)
                                 if next_market:
                                     state['active_signal'] = {"direction": trade_signal, "retry_until": now_ts + 30, "amount": mg.get_bet(m_label), "timestamp": next_market['timestamp'], "notified_retry": False}
+                                    ui.status_data["markets"][m_coin]["status"] = f"🎯 {trade_signal} Signal"
                                     log_info(f"[{m_label}] {trade_signal} Signal! Entry window open for 30s.")
+                        else:
+                            if ui.status_data["markets"][m_coin]["status"] not in ["✅ WON", "❌ LOST"]:
+                                ui.status_data["markets"][m_coin]["status"] = "Scanning"
             except Exception as b_err:
                 log_network_error(f"processing {m_label} boundary", b_err)
 
