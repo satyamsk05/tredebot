@@ -229,11 +229,14 @@ async def bot_loop():
                                 update_virtual_balance(shares * 1.0)
                                 ui.status_data["markets"][m_coin]["status"] = "✅ WON"
                                 trade_res = "WIN"
+                                send_telegram_notify(f"✅ *TRADE WON*\nAsset: {m_label}\nResult: {dir_bet} @ {close_price}\nNext: Back to Level 1")
                             else:
                                 log_error(f"[{m_label}] Trade LOST! ({dir_bet}, Price: {close_price})")
                                 mg.lose(m_label)
                                 ui.status_data["markets"][m_coin]["status"] = "❌ LOST"
                                 trade_res = "LOSS"
+                                next_step = mg.get_step(m_label)
+                                send_telegram_notify(f"❌ *TRADE LOST*\nAsset: {m_label}\nResult: {dir_bet} @ {close_price}\nNext: Martingale Level {next_step+1}")
                             
                             outcome_idx = 1 if dir_bet == "YES" else 2
                             await asyncio.to_thread(save_trade, timestamp=int(time.time()), market_id=closed_market['market_id'], direction=dir_bet, amount=bet_amount, result=trade_res, payout=bet_amount/limit_price if trade_res == "WIN" else 0, order_type=pending.get('order_type', "AUTO"), interval=m_interval, outcome_index=outcome_idx if trade_res == "WIN" else None)
@@ -310,14 +313,21 @@ async def bot_loop():
             if not any_pending:
                 candidates = [m_id for m_id, s in market_states.items() if s.get('active_signal')]
                 if candidates:
-                    # PRO LOGIC: SOLONA priority (if multiple signals at once)
-                    sol_candidates = [m for m in candidates if "sol_" in m]
-                    if sol_candidates:
-                        chosen_m_id = sol_candidates[0]
-                        log_info(f"Priority Signal: Overriding random selection for {chosen_m_id}")
+                    # RECOVERY PRIORITY: If a coin is in Martingale recovery (step > 0), prioritize it!
+                    recovery_mids = [m_id for m_id in candidates if mg.get_step(market_states[m_id]['label']) > 0]
+                    
+                    if recovery_mids:
+                        chosen_m_id = recovery_mids[0]
+                        log_info(f"Recovery Priority: Sticking to {chosen_m_id} to recoup loss.")
                     else:
-                        import random
-                        chosen_m_id = random.choice(candidates)
+                        # PRO LOGIC: SOLONA priority (if no recovery needed)
+                        sol_candidates = [m for m in candidates if "sol_" in m]
+                        if sol_candidates:
+                            chosen_m_id = sol_candidates[0]
+                            log_info(f"Priority Signal: Overriding selection for {chosen_m_id}")
+                        else:
+                            import random
+                            chosen_m_id = random.choice(candidates)
                         
                     state = market_states[chosen_m_id]
                     signal = state['active_signal']
@@ -336,7 +346,15 @@ async def bot_loop():
                                 state['pending_bet'] = {"direction": signal['direction'], "timestamp": signal['timestamp'], "amount": signal['amount'], "shares": signal['amount']/limit_price, "order_type": order_type}
                                 state['active_signal'] = None
                                 log_trade(f"[{state['label']}] SUCCESS! Placed ${signal['amount']} on {signal['direction']}")
-                                send_telegram_notify(f"🎯 *TRADE EXECUTED*\n{signal['direction']} ${signal['amount']} in {state['label']}")
+                                
+                                # Enhanced execution notification
+                                step = mg.get_step(state['label'])
+                                msg = f"🎯 *TRADE EXECUTED*\n"
+                                msg += f"• Asset: `{state['label']}`\n"
+                                msg += f"• Side:  `{signal['direction']}`\n"
+                                msg += f"• Bet:   `${signal['amount']}`\n"
+                                msg += f"• Mode:  `{'Recovery' if step > 0 else 'Initial'}` (Lvl {step+1})"
+                                send_telegram_notify(msg)
                     
                     # Expire all signals after selection
                     for mid in candidates:
