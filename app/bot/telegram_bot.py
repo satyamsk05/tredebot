@@ -68,10 +68,11 @@ def get_main_menu():
     paused = os.path.exists("pause.flag")
     start_stop_btn = t("btn_start") if paused else t("btn_stop")
     
-    # Consolidated 3-column grid (Clean Home Screen)
+    # Minimalist 2-column grid
     rows = [
-        [start_stop_btn, t("btn_balance"), t("btn_live")],
-        [t("btn_status"), t("btn_manual"), t("btn_history")],
+        [start_stop_btn, t("btn_balance")],
+        [t("btn_live"), t("btn_status")],
+        [t("btn_manual"), t("btn_history")],
         [t("btn_trends"), t("btn_settings")]
     ]
     
