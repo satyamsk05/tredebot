@@ -63,6 +63,17 @@ class Martingale:
             step = 0 
         self._save(coin, step)
 
+    def reset_all(self):
+        logging.info("Resetting ALL martingale steps to 0.")
+        if os.path.exists(self.state_file):
+            try:
+                with open(self.state_file, "w") as f:
+                    json.dump({}, f)
+                return True
+            except Exception as e:
+                logging.error(f"Failed to reset martingale state: {e}")
+        return False
+
     def get_step(self, coin):
         return self._load(coin)
 

@@ -84,6 +84,7 @@ def get_main_menu():
 
 def get_settings_menu():
     buttons = [
+        [t("btn_7day_history")],
         [t("btn_report"), "📅 7-Day Stats"],
         [t("btn_reset"), t("btn_help")],
         [t("btn_back")]
@@ -516,8 +517,7 @@ async def reset_martingale(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_chat_id(update.effective_chat.id)
     
     mg = Martingale()
-    # Reset SOL 15m
-    mg.win("SOL_15m")
+    mg.reset_all()
     
     msg = (
         "🔄 *MARTINGALE RESET*\n"
@@ -630,6 +630,105 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
     log_activity("Back", update)
     await update.message.reply_text(t("btn_back") + "...", reply_markup=get_main_menu(), parse_mode="Markdown")
+
+async def seven_day_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    log_activity("7-Day History", update)
+    save_chat_id(update.effective_chat.id)
+    
+    from datetime import datetime
+    date_str = datetime.now().strftime("%m/%d")
+    msg = f"🗓 *7-DAY MARKET · {date_str}*\n━━━━━━━━━━━━━━━━━━━━\n"
+    
+    icons = {"BTC": "🟡₿", "ETH": "🟣Ξ", "SOL": "🔵◎", "XRP": "⚫✕"}
+    found_any = False
+    
+    for c in COINS:
+        since = int(time.time()) - (7 * 24 * 3600)
+        from app.db import async_get_last_n_candles
+        candles = await async_get_last_n_candles(limit=2000, interval=15, coin=c, min_ts=since)
+        
+        if not candles:
+            continue
+            
+        found_any = True
+        prices = [float(cand['close_price']) for cand in candles]
+        curr = prices[-1]
+        start = prices[0]
+        total_change = ((curr - start) / start * 100) if start > 0 else 0
+        
+        icon = icons.get(c.upper(), "🌟")
+        msg += f"{icon} *{c}* · 💲{curr:.4f} · {'' if total_change < 0 else '+'}{total_change:.1f}%\n"
+        
+        # Group candles by day
+        days_data = {}
+        for cand in candles:
+            d = datetime.fromtimestamp(cand['timestamp']).strftime("%m/%d")
+            if d not in days_data: days_data[d] = []
+            days_data[d].append(float(cand['close_price']))
+            
+        # Limit to last 7 days keys
+        sorted_days = sorted(days_data.keys(), reverse=True)[:7]
+        
+        for d in sorted_days:
+            dp = days_data[d]
+            d_start = dp[0]
+            d_end = dp[-1]
+            d_change = ((d_end - d_start) / d_start * 100) if d_start > 0 else 0
+            
+            # 10-dot trend for the day
+            d_trend = ""
+            dots = 8
+            step = max(1, len(dp) // dots)
+            last_p = dp[0]
+            for i in range(0, len(dp), step):
+                p = dp[i]
+                d_trend += "🟢" if p >= last_p else "🔴"
+                last_p = p
+                
+            msg += f"📅 `{d}` {d_trend} ({'' if d_change < 0 else '+'}{d_change:.1f}%)\n"
+            
+        msg += "──────────────────\n"
+        
+    if not found_any:
+        msg += "📂 *No history collected yet.*\nKeep the bot running to build data!\n"
+        
+    msg += "━━━━━━━━━━━━━━━━━━━━"
+    
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(t("btn_7day_export"), callback_data="export_7d")]
+    ])
+    
+    await update.message.reply_text(msg, reply_markup=keyboard, parse_mode="Markdown")
+
+async def export_history_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    log_activity("Export 7D Callback", update)
+    await query.edit_message_text("⏳ *Generating export files...*", parse_mode="Markdown")
+    
+    from app.db import export_candles_to_file
+    files_sent = 0
+    
+    for c in COINS:
+        file_path = await asyncio.to_thread(export_candles_to_file, c, days=7, interval=15)
+        if file_path and os.path.exists(file_path):
+            try:
+                with open(file_path, "rb") as f:
+                    await context.bot.send_document(
+                        chat_id=update.effective_chat.id,
+                        document=f,
+                        filename=os.path.basename(file_path),
+                        caption=f"📂 7-Day History Export for {c}"
+                    )
+                files_sent += 1
+            except Exception as e:
+                logging.error(f"Failed to send export: {e}")
+                
+    if files_sent == 0:
+        await query.message.reply_text("❌ No data found to export.")
+    else:
+        await query.message.reply_text(f"✅ Sent {files_sent} history files.")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     log_activity("Help", update)
@@ -805,6 +904,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     data = query.data
     
+    if data == "export_7d":
+        return await export_history_callback(update, context)
+        
     if data == "refresh_live":
         tf = 15
         msg = f"📉 *{tf}M LIVE MULTI-ODDS*\n━━━━━━━━━━━━━━━━━━\n"
@@ -1167,6 +1269,7 @@ def run_telegram_bot():
     app.add_handler(MessageHandler(filters.Regex(r("btn_trends")), trends))
     app.add_handler(MessageHandler(filters.Regex(r("btn_manual")), manual_trade))
     app.add_handler(MessageHandler(filters.Regex(r("btn_settings")), settings_command))
+    app.add_handler(MessageHandler(filters.Regex(r("btn_7day_history")), seven_day_history))
     app.add_handler(MessageHandler(filters.Regex(r("btn_back_settings")), settings_command))
     app.add_handler(MessageHandler(filters.Regex(r("btn_reset")), reset_martingale))
     app.add_handler(MessageHandler(filters.Regex(r("btn_report")), daily_report))

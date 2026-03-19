@@ -24,6 +24,8 @@ STRINGS = {
         "btn_reset": "🔄 Reset L1",
         "btn_report": "📅 Summary",
         "btn_trends": "📈 Chart",
+        "btn_7day_history": "📊 7-Day History",
+        "btn_7day_export": "📥 Export CSV",
         "btn_help": "🆘 Help",
         "btn_claim": "🎁 Claim Winnings",
         "pending_claims": "🎁 Pending Claims: *${amount}*",

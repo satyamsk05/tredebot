@@ -210,5 +210,36 @@ def get_24h_stats(interval=None):
 async def async_get_24h_stats(interval=None):
     return await asyncio.to_thread(get_24h_stats, interval)
 
+def export_candles_to_file(coin, days=7, interval=15):
+    """Generates a CSV file for the last N days of data for a specific coin."""
+    now = int(time.time())
+    since = now - (days * 24 * 3600)
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT datetime(timestamp, 'unixepoch') as UTC_Time, timestamp, close_price 
+        FROM candles 
+        WHERE coin = ? AND interval = ? AND timestamp >= ?
+        ORDER BY timestamp ASC
+    ''', (coin.upper(), interval, since))
+    rows = cursor.fetchall()
+    conn.close()
+    
+    if not rows:
+        return None
+        
+    os.makedirs("data/exports", exist_ok=True)
+    file_path = f"data/exports/{coin.lower()}_{days}d_history_{int(time.time())}.csv"
+    
+    import csv
+    with open(file_path, "w", newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(["UTC_Time", "Timestamp", "Close_Price"])
+        for row in rows:
+            writer.writerow([row['UTC_Time'], row['timestamp'], row['close_price']])
+            
+    return file_path
+
 # Initialize on import
 init_db()
