@@ -114,6 +114,8 @@ async def bot_loop():
     } for m in POLL_MARKETS}
     
     # Initialize UI state
+    loop_count = 0
+    matic_bal = get_matic_balance()
     ui.status_data["balance"] = str(get_balance())
     ui.status_data["virtual_balance"] = str(get_virtual_balance())
     ui.status_data["matic_balance"] = str(matic_bal)
