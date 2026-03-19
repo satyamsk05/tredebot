@@ -37,6 +37,8 @@ logging.getLogger("apscheduler").setLevel(logging.WARNING)
 
 # Global Cache for Winnings (to show on Main Menu)
 _cached_unclaimed = 0.0
+# Track start time for 'Session-Only' Trends
+BOT_START_TIME = time.time()
 
 def log_info(msg):
     logging.info(f"UI INFO: {msg}")
@@ -430,7 +432,7 @@ async def trends(update: Update, context: ContextTypes.DEFAULT_TYPE):
         active = await async_get_active_market(coin=c, interval=tf)
         if not active: return (c, [], 0)
         try:
-            candles = await async_get_last_n_candles(10, interval=tf, coin=c)
+            candles = await async_get_last_n_candles(10, interval=tf, coin=c, min_ts=BOT_START_TIME)
             last_ts = candles[-1]['timestamp'] if candles else 0
         except Exception as e:
             logging.error(f"Error fetching candles for {c}: {e}")

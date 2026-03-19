@@ -84,45 +84,47 @@ def save_candle(market_id, token_id, timestamp, close_price, interval=5, coin=No
 async def async_save_candle(market_id, token_id, timestamp, close_price, interval=5, coin=None):
     return await asyncio.to_thread(save_candle, market_id, token_id, timestamp, close_price, interval, coin)
 
-def get_last_n_candles(limit=10, market_id=None, interval=None, coin=None):
+def get_last_n_candles(limit=10, market_id=None, interval=None, coin=None, min_ts=0):
     conn = get_db_connection()
     cursor = conn.cursor()
     
+    # Base query logic with min_ts support
     if coin and interval:
         cursor.execute('''
             SELECT timestamp, close_price FROM candles
-            WHERE coin = ? AND interval = ?
+            WHERE coin = ? AND interval = ? AND timestamp >= ?
             ORDER BY timestamp DESC
             LIMIT ?
-        ''', (coin, interval, limit))
+        ''', (coin, interval, min_ts, limit))
     elif interval:
         cursor.execute('''
             SELECT timestamp, close_price FROM candles
-            WHERE interval = ?
+            WHERE interval = ? AND timestamp >= ?
             ORDER BY timestamp DESC
             LIMIT ?
-        ''', (interval, limit))
+        ''', (interval, min_ts, limit))
     elif market_id:
         cursor.execute('''
             SELECT timestamp, close_price FROM candles
-            WHERE market_id = ?
+            WHERE market_id = ? AND timestamp >= ?
             ORDER BY timestamp DESC
             LIMIT ?
-        ''', (market_id, limit))
+        ''', (market_id, min_ts, limit))
     else:
         cursor.execute('''
             SELECT timestamp, close_price FROM candles
+            WHERE timestamp >= ?
             ORDER BY timestamp DESC
             LIMIT ?
-        ''', (limit,))
+        ''', (min_ts, limit))
     rows = cursor.fetchall()
     conn.close()
     
     latest = [{"timestamp": row['timestamp'], "close_price": row['close_price']} for row in rows]
     return latest[::-1]
 
-async def async_get_last_n_candles(limit=10, market_id=None, interval=None, coin=None):
-    return await asyncio.to_thread(get_last_n_candles, limit, market_id, interval, coin)
+async def async_get_last_n_candles(limit=10, market_id=None, interval=None, coin=None, min_ts=0):
+    return await asyncio.to_thread(get_last_n_candles, limit, market_id, interval, coin, min_ts)
 
 def save_trade(timestamp, market_id, direction, amount, result, payout, order_type="AUTO", interval=5, outcome_index=0):
     conn = get_db_connection()
