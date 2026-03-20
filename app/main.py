@@ -219,27 +219,44 @@ async def bot_loop():
                         if pending and pending['timestamp'] == closed_market['timestamp']:
                             dir_bet = pending['direction']
                             bet_amount = pending.get('amount', mg.get_bet(m_label))
-                            limit_price = pending.get('buy_price', 0.49 if mg.get_step(m_label) == 1 else 0.50)
+                            entry_price = pending.get('buy_price', 0.50)
                             
-                            is_fill = (close_price >= limit_price) if dir_bet == "YES" else (close_price <= (1.0 - limit_price))
-                            if is_fill:
-                                log_success(f"[{m_label}] Trade WON! ({dir_bet}, Price: {close_price})")
+                            # resolution_price is 1.0 if YES win, 0.0 if YES loss (NO win)
+                            # Actual win condition for UpDown markets is simply resolving > 0.5 or < 0.5
+                            market_won = (close_price > 0.5) if dir_bet == "YES" else (close_price < 0.5)
+                            
+                            # For Level 1 (FOK/Market), we assume success means it filled.
+                            # For Level 2+ (Limit), we check if the market touched our price (using close as proxy)
+                            order_filled = True if pending.get('order_type') == "FOK" else (
+                                (close_price >= entry_price) if dir_bet == "YES" else (close_price <= (1.0 - entry_price))
+                            )
+                            
+                            if market_won and order_filled:
+                                log_success(f"[{m_label}] Trade WON! ({dir_bet}, Close: {close_price})")
                                 mg.win(m_label)
-                                shares = pending.get('shares', bet_amount / limit_price)
-                                update_virtual_balance(shares * 1.0)
+                                # shares were calculated at entry time based on actual price
+                                shares = pending.get('shares', bet_amount / entry_price)
+                                payout = shares * 1.0 # Resolved value
+                                profit = payout - bet_amount
+                                update_virtual_balance(payout)
                                 ui.status_data["markets"][m_coin]["status"] = "✅ WON"
                                 trade_res = "WIN"
-                                send_telegram_notify(f"✅ *TRADE WON*\n\n• Asset: `{m_label}`\n• PnL:  `+{shares*1.0:.2f} USDC` \n• Next: Back to Level 1")
-                            else:
-                                log_error(f"[{m_label}] Trade LOST! ({dir_bet}, Price: {close_price})")
+                                send_telegram_notify(f"✅ *TRADE WON*\n\n• Asset: `{m_label}`\n• PnL:  `+{profit:.2f} USDC` \n• Next: Back to Level 1")
+                            elif not market_won and order_filled:
+                                log_error(f"[{m_label}] Trade LOST! ({dir_bet}, Close: {close_price})")
                                 mg.lose(m_label)
                                 ui.status_data["markets"][m_coin]["status"] = "❌ LOST"
                                 trade_res = "LOSS"
                                 next_step = mg.get_step(m_label)
                                 send_telegram_notify(f"❌ *TRADE LOST*\n\n• Asset: `{m_label}`\n• Step:  Martingale Level {next_step+1}\n• Info:  Locking Asset for Recovery")
+                            else:
+                                # Order never filled (Wait for next signal or keep pending?)
+                                log_warning(f"[{m_label}] Order did not fill. Skipping resolution.")
+                                ui.status_data["markets"][m_coin]["status"] = "Ready"
                             
-                            outcome_idx = 1 if dir_bet == "YES" else 2
-                            await asyncio.to_thread(save_trade, timestamp=int(time.time()), market_id=closed_market['market_id'], direction=dir_bet, amount=bet_amount, result=trade_res, payout=bet_amount/limit_price if trade_res == "WIN" else 0, order_type=pending.get('order_type', "AUTO"), interval=m_interval, outcome_index=outcome_idx if trade_res == "WIN" else None)
+                            if trade_res:
+                                outcome_idx = 1 if dir_bet == "YES" else 2
+                                await asyncio.to_thread(save_trade, timestamp=int(time.time()), market_id=closed_market['market_id'], direction=dir_bet, amount=bet_amount, result=trade_res, payout=payout if trade_res == "WIN" else 0, order_type=pending.get('order_type', "AUTO"), interval=m_interval, outcome_index=outcome_idx if trade_res == "WIN" else None)
                             state['pending_bet'] = None
                         
                         if m_id == primary_id: print_result_banner(trade_res, market_dir)
@@ -344,14 +361,26 @@ async def bot_loop():
                         if m_next and m_next['timestamp'] == signal['timestamp']:
                             target_token = m_next['yes_token'] if signal['direction'] == "YES" else m_next['no_token']
                             current_step = mg.get_step(state['label'])
-                            order_type, limit_price = ("FOK", 0.99) if current_step == 0 else ("GTC", 0.49 if current_step == 1 else 0.50)
+                            
+                            # For Level 1 (step 0), use Market-Fill (0.99 price) but calculate shares based on actual current price
+                            if current_step == 0:
+                                order_type = "FOK"
+                                limit_price = 0.99
+                                current_price = await async_get_last_trade_price(target_token)
+                                # Default to 0.50 if price fetch fails for estimation
+                                est_price = current_price if (current_price and current_price > 0) else 0.50
+                            else:
+                                order_type = "GTC"
+                                limit_price = 0.49 if current_step == 1 else 0.50
+                                est_price = limit_price
                             
                             success = await async_place_bet(target_token, signal['amount'], coin=state['coin'], price=limit_price, order_type=order_type)
                             if success:
                                 update_virtual_balance(-signal['amount'])
-                                state['pending_bet'] = {"direction": signal['direction'], "timestamp": signal['timestamp'], "amount": signal['amount'], "shares": signal['amount']/limit_price, "order_type": order_type}
+                                # Use est_price for reporting, but limit_price is what goes to the exchange
+                                state['pending_bet'] = {"direction": signal['direction'], "timestamp": signal['timestamp'], "amount": signal['amount'], "shares": signal['amount']/est_price, "order_type": order_type, "buy_price": est_price}
                                 state['active_signal'] = None
-                                log_trade(f"[{state['label']}] SUCCESS! Placed ${signal['amount']} on {signal['direction']}")
+                                log_trade(f"[{state['label']}] SUCCESS! Placed ${signal['amount']} on {signal['direction']} (Est. Price: {est_price})")
                                 
                                 # Enhanced execution notification
                                 step = mg.get_step(state['label'])
