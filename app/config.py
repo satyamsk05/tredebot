@@ -30,8 +30,8 @@ DRY_RUN = os.getenv("DRY_RUN", "true").lower() == "true"
 INTERVAL = int(os.getenv("INTERVAL", "5"))
 INITIAL_BET_AMOUNT = int(os.getenv("INITIAL_BET_AMOUNT", "3"))
 VIRTUAL_BALANCE_START = float(os.getenv("VIRTUAL_BALANCE_START", "500.00"))
-# COINS = os.getenv("COINS", "BTC,ETH,SOL").split(",")
 COINS = ["BTC", "ETH", "SOL", "XRP"]
+# COINS = os.getenv("COINS", "BTC,ETH,SOL").split(",")
 ENABLE_5M = False
 ENABLE_15M = True
 

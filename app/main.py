@@ -142,7 +142,7 @@ async def bot_loop():
                             ui.status_data["markets"][coin.upper()]["no"] = f"{(1-y_p):.2f}"
                 ui.update()
             except Exception: pass
-            await asyncio.sleep(15) # Pulse every 15s to avoid rate limits
+            await asyncio.sleep(1) # Pulse every 1s for ultra-live tracking
 
     asyncio.create_task(dashboard_price_poller())
 
