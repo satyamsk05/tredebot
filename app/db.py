@@ -73,6 +73,12 @@ def init_db():
 def save_candle(market_id, token_id, timestamp, close_price, interval=5, coin=None):
     conn = get_db_connection()
     cursor = conn.cursor()
+    # Ensure uniqueness (simple check before insert)
+    cursor.execute('SELECT 1 FROM candles WHERE coin = ? AND interval = ? AND timestamp = ?', (coin, interval, timestamp))
+    if cursor.fetchone():
+        conn.close()
+        return
+
     cursor.execute('''
         INSERT INTO candles (market_id, token_id, timestamp, close_price, interval, coin)
         VALUES (?, ?, ?, ?, ?, ?)
@@ -93,6 +99,7 @@ def get_last_n_candles(limit=10, market_id=None, interval=None, coin=None, min_t
         cursor.execute('''
             SELECT timestamp, close_price FROM candles
             WHERE coin = ? AND interval = ? AND timestamp >= ?
+            GROUP BY timestamp
             ORDER BY timestamp DESC
             LIMIT ?
         ''', (coin, interval, min_ts, limit))
@@ -100,6 +107,7 @@ def get_last_n_candles(limit=10, market_id=None, interval=None, coin=None, min_t
         cursor.execute('''
             SELECT timestamp, close_price FROM candles
             WHERE interval = ? AND timestamp >= ?
+            GROUP BY timestamp
             ORDER BY timestamp DESC
             LIMIT ?
         ''', (interval, min_ts, limit))

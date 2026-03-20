@@ -473,8 +473,9 @@ async def trends(update: Update, context: ContextTypes.DEFAULT_TYPE):
         time_label = " (N/A)"
         if last_ts > 0:
             diff_mins = int((time.time() - last_ts) / 60)
-            dt = datetime.fromtimestamp(last_ts)
-            time_label = f" ({dt.strftime('%H:%M')} - {diff_mins}m ago)"
+            # Adjust to IST (+5:30) for display
+            dt = datetime.fromtimestamp(last_ts + 19800)
+            time_label = f" ({dt.strftime('%H:%M')} IST - {diff_mins}m ago)"
             
         msg += f" {c}{time_label}\n"
         msg += f" ▎ `{trend_str}`\n"
