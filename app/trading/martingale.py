@@ -15,27 +15,56 @@ class Martingale:
         """Returns the fixed bet sequence."""
         return BET_SEQUENCE
 
+    def _lock_context(self):
+        import time
+        max_retries = 50
+        lock_file = self.state_file + ".lock"
+        for _ in range(max_retries):
+            try:
+                # Create a lock file (exclusive access)
+                os.makedirs(os.path.dirname(lock_file), exist_ok=True)
+                fd = os.open(lock_file, os.O_CREAT | os.O_EXCL | os.O_RDWR)
+                return fd, lock_file
+            except FileExistsError:
+                time.sleep(0.05)
+        return None, None
+
+    def _unlock_context(self, fd_info):
+        fd, lock_file = fd_info
+        if fd:
+            os.close(fd)
+            try: os.remove(lock_file)
+            except: pass
+
     def _load(self, coin):
-        if os.path.exists(self.state_file):
-            try:
-                with open(self.state_file, "r") as f:
-                    data = json.load(f)
-                    return data.get(coin, 0)
-            except Exception:
-                pass
-        return 0
-        
+        fd_info = self._lock_context()
+        try:
+            if os.path.exists(self.state_file):
+                try:
+                    with open(self.state_file, "r") as f:
+                        data = json.load(f)
+                        return data.get(coin, 0)
+                except Exception:
+                    pass
+            return 0
+        finally:
+            self._unlock_context(fd_info)
+            
     def _save(self, coin, step):
-        data = {}
-        if os.path.exists(self.state_file):
-            try:
-                with open(self.state_file, "r") as f:
-                    data = json.load(f)
-            except Exception:
-                pass
-        data[coin] = step
-        with open(self.state_file, "w") as f:
-            json.dump(data, f)
+        fd_info = self._lock_context()
+        try:
+            data = {}
+            if os.path.exists(self.state_file):
+                try:
+                    with open(self.state_file, "r") as f:
+                        data = json.load(f)
+                except Exception:
+                    pass
+            data[coin] = step
+            with open(self.state_file, "w") as f:
+                json.dump(data, f)
+        finally:
+            self._unlock_context(fd_info)
 
     def get_bet(self, coin):
         step = self._load(coin)
@@ -64,15 +93,19 @@ class Martingale:
         self._save(coin, step)
 
     def reset_all(self):
-        logging.info("Resetting ALL martingale steps to 0.")
-        if os.path.exists(self.state_file):
-            try:
-                with open(self.state_file, "w") as f:
-                    json.dump({}, f)
-                return True
-            except Exception as e:
-                logging.error(f"Failed to reset martingale state: {e}")
-        return False
+        fd_info = self._lock_context()
+        try:
+            logging.info("Resetting ALL martingale steps to 0.")
+            if os.path.exists(self.state_file):
+                try:
+                    with open(self.state_file, "w") as f:
+                        json.dump({}, f)
+                    return True
+                except Exception as e:
+                    logging.error(f"Failed to reset martingale state: {e}")
+            return False
+        finally:
+            self._unlock_context(fd_info)
 
     def get_step(self, coin):
         return self._load(coin)

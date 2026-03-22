@@ -38,6 +38,7 @@ logging.getLogger("apscheduler").setLevel(logging.WARNING)
 # Global Cache for Winnings (to show on Main Menu)
 _cached_unclaimed = 0.0
 # Track start time for 'Session-Only' Trends (Aligned to 15m block start, strictly session-only)
+# Track start time for session-only trends and safety
 BOT_START_TIME = int(time.time())
 
 def log_info(msg):
@@ -445,6 +446,7 @@ async def trends(update: Update, context: ContextTypes.DEFAULT_TYPE):
         active = await async_get_active_market(coin=c, interval=tf)
         if not active: return (c, [], 0)
         try:
+            # Strictly show only candles from the current session
             candles = await async_get_last_n_candles(10, interval=tf, coin=c, min_ts=BOT_START_TIME)
             last_ts = candles[-1]['timestamp'] if candles else 0
         except Exception as e:
@@ -459,8 +461,8 @@ async def trends(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from datetime import datetime
     for c, candles, last_ts in results:
         trend_str = ""
-        # Reverse to show most recent on the right
-        for candle in candles[::-1]:
+        # Default order (oldest to newest) shows most recent on the right
+        for candle in candles:
             price = candle.get('close_price', 0.5)
             if price >= 0.5:
                 trend_str += "🟢"
@@ -473,8 +475,8 @@ async def trends(update: Update, context: ContextTypes.DEFAULT_TYPE):
         time_label = " (N/A)"
         if last_ts > 0:
             diff_mins = int((time.time() - last_ts) / 60)
-            # Adjust to IST (+5:30) for display
-            dt = datetime.fromtimestamp(last_ts + 19800)
+            # Use system local time (already IST on this machine)
+            dt = datetime.fromtimestamp(last_ts)
             time_label = f" ({dt.strftime('%H:%M')} IST - {diff_mins}m ago)"
             
         msg += f" {c}{time_label}\n"
@@ -847,7 +849,7 @@ async def handle_fixed_manual_trade(update: Update, context: ContextTypes.DEFAUL
     
     msg_waiting = await update.message.reply_text(f"⏳ Placing *${amount}* on *{direction}*...", parse_mode="Markdown")
     
-    success = await async_place_bet(token, amount, coin=coin)
+    success = await async_place_bet(token, amount, coin=coin, sizing_price=buy_price)
     
     if success:
         try:
@@ -1049,7 +1051,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     log_activity(f"MT: {direction} ${amount}", update)
     await query.edit_message_text(text=f"⏳ Placing *${amount}* on *{direction}*...", parse_mode="Markdown")
     
-    success = await async_place_bet(token, amount, coin=coin)
+    success = await async_place_bet(token, amount, coin=coin, sizing_price=buy_price)
     
     if success:
         try:

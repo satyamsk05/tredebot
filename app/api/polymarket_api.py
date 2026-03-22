@@ -117,7 +117,7 @@ async def async_get_last_trade_price(token_id):
         return float(res.json().get('price', 0)) if res.status_code == 200 else None
     except: return None
 
-def place_bet(token_id, amount, coin="BTC", price=0.99, order_type="GTC"):
+def place_bet(token_id, amount, coin="BTC", price=0.99, order_type="GTC", sizing_price=None):
     """Synchronous order placement"""
     if DRY_RUN: return True
     try:
@@ -126,8 +126,15 @@ def place_bet(token_id, amount, coin="BTC", price=0.99, order_type="GTC"):
         # Determine if it's a "market" order (FOK with high price) or a true "limit" order
         is_limit = price < 0.90
         
-        # Calculate size and create order args
-        size = round(amount / price, 2)
+        # Calculate size based on pricing
+        calc_price = sizing_price if sizing_price else price
+        size = round(amount / calc_price, 2)
+        
+        # Safety: Polymarket has min order size usually around $1
+        if size < 0.1:
+            logging.warning(f"[{coin}] Calculated size {size} is too small. Skipping.")
+            return False
+
         order_args = OrderArgs(
             token_id=token_id, 
             price=price,
@@ -137,11 +144,11 @@ def place_bet(token_id, amount, coin="BTC", price=0.99, order_type="GTC"):
         signed_order = client.create_order(order_args)
 
         if not is_limit:
-            logging.info(f"[{coin}] Placing Market-Fill order: ${amount} for token {token_id}")
+            logging.info(f"[{coin}] Placing Market-Fill order: ${amount} (Size: {size}) at limit {price}")
             actual_order_type = OrderType.FOK if order_type == "FOK" else OrderType.GTC
             resp = client.post_order(signed_order, actual_order_type, post_only=False)
         else:
-            logging.info(f"[{coin}] Placing Limit Order (Post-Only): ${amount} at ${price} for token {token_id}")
+            logging.info(f"[{coin}] Placing Limit Order (Post-Only): ${amount} (Size: {size}) at ${price}")
             resp = client.post_order(signed_order, OrderType.GTC, post_only=True) # Maker Rebate active!
             
         return resp and resp.get("success")
@@ -151,9 +158,9 @@ def place_bet(token_id, amount, coin="BTC", price=0.99, order_type="GTC"):
         logging.error(traceback.format_exc())
         return False
 
-async def async_place_bet(token_id, amount, coin="BTC", price=0.99, order_type="GTC"):
+async def async_place_bet(token_id, amount, coin="BTC", price=0.99, order_type="GTC", sizing_price=None):
     """Offloads the synchronous SDK call to a thread to keep bot alive"""
-    return await asyncio.to_thread(place_bet, token_id, amount, coin, price, order_type)
+    return await asyncio.to_thread(place_bet, token_id, amount, coin, price, order_type, sizing_price)
 
 def fetch_redeemable_positions(wallet_address):
     """
