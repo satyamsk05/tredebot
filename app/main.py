@@ -45,6 +45,28 @@ logging.getLogger("apscheduler").setLevel(logging.WARNING)
 
 NOTIFY_FILE = "data/telegram_notify.json"
 
+TRADING_STATE_FILE = "data/trading_state.json"
+
+def save_trading_state(states):
+    """Save the current pending trades to disk so they survive restarts."""
+    try:
+        # We only save the necessary parts: pending_bet
+        data = {m_id: {"pending_bet": s.get("pending_bet")} for m_id, s in states.items()}
+        with open(TRADING_STATE_FILE, "w") as f:
+            json.dump(data, f)
+    except Exception as e:
+        logging.error(f"Failed to save trading state: {e}")
+
+def load_trading_state():
+    """Load pending trades from disk."""
+    if os.path.exists(TRADING_STATE_FILE):
+        try:
+            with open(TRADING_STATE_FILE, "r") as f:
+                return json.load(f)
+        except Exception as e:
+            logging.error(f"Failed to load trading state: {e}")
+    return {}
+
 def send_telegram_notify(message):
     """Write a notification to the JSON file for Telegram bot to pick up."""
     try:
@@ -152,6 +174,14 @@ async def bot_loop():
         "last_ts": 0, "processed_ts": 0, "pending_bet": None, "startup_candles": 0,
         "coin": m['coin'], "interval": m['interval'], "label": m['label']
     } for m in POLL_MARKETS}
+    
+    # Load persistent state (pending trades)
+    saved_state = load_trading_state()
+    for m_id, s in saved_state.items():
+        if m_id in market_states:
+            market_states[m_id]["pending_bet"] = s.get("pending_bet")
+            if market_states[m_id]["pending_bet"]:
+                log_info(f"[{market_states[m_id]['label']}] RESTORED pending trade from disk: {market_states[m_id]['pending_bet']['direction']} ${market_states[m_id]['pending_bet']['amount']}")
     
     # Initialize UI state
     loop_count = 0
@@ -312,6 +342,7 @@ async def bot_loop():
                                 await asyncio.to_thread(save_trade, timestamp=int(time.time()), market_id=closed_market['market_id'], direction=dir_bet, amount=bet_amount, result=trade_res, payout=payout, order_type=pending.get('order_type', "AUTO"), interval=m_interval, outcome_index=outcome_idx)
                             
                             state['pending_bet'] = None
+                            save_trading_state(market_states)
                     else:
                         log_warning(f"[{m_label}] Price fetch FAILED for resolution. Will RETRY next boundary.")
                     
@@ -335,7 +366,13 @@ async def bot_loop():
                                 state['active_signal'] = {"direction": trade_signal, "retry_until": now_ts + 30, "amount": mg.get_bet(m_label), "timestamp": next_market['timestamp'], "notified_retry": False}
                                 ui.status_data["markets"][m_coin]["status"] = f"🎯 {trade_signal} Signal"
                                 log_info(f"[{m_label}] {trade_signal} Signal! Entry window open for 30s. Streak: {closes}")
+                            else:
+                                log_warning(f"[{m_label}] Could not fetch next active market for signal.")
                     else:
+                        # Log that we checked but no signal found
+                        if loop_count % 3600 == 0: # Once an hour per market to keep logs manageable
+                            log_info(f"[{m_label}] Heartbeat: Checking signals... No entry criteria met. (P: {closes})")
+                        
                         if ui.status_data["markets"][m_coin]["status"] not in ["✅ WON", "❌ LOST"]:
                             ui.status_data["markets"][m_coin]["status"] = "Scanning"
             except Exception as b_err:
@@ -452,6 +489,7 @@ async def bot_loop():
                                 update_virtual_balance(-signal['amount'])
                                 # Use est_price for reporting, but limit_price is what goes to the exchange
                                 state['pending_bet'] = {"direction": signal['direction'], "timestamp": signal['timestamp'], "amount": signal['amount'], "shares": signal['amount'] / est_price, "order_type": order_type, "buy_price": est_price}
+                                save_trading_state(market_states)
                                 state['active_signal'] = None
                                 log_trade(f"[{state['label']}] SUCCESS! Placed ${signal['amount']} on {signal['direction']} (Sized at: {est_price})")
                                 
