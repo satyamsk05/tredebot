@@ -52,11 +52,49 @@ def send_telegram_notify(message):
         if os.path.exists(NOTIFY_FILE):
             with open(NOTIFY_FILE, "r") as f:
                 notifications = json.load(f)
-        notifications.append({"message": message})
+        notifications.append({"message": message, "timestamp": time.time()})
         with open(NOTIFY_FILE, "w") as f:
             json.dump(notifications, f)
     except Exception:
         pass
+
+def check_single_instance():
+    """Ensure only one instance of the bot is running."""
+    pid_file = "data/bot.pid"
+    if os.path.exists(pid_file):
+        try:
+            with open(pid_file, "r") as f:
+                old_pid = int(f.read().strip())
+            
+            # Use tasklist on Windows or ps on Linux
+            if os.name == 'nt':
+                output = subprocess.check_output(f'tasklist /FI "PID eq {old_pid}"', shell=True, stderr=subprocess.STDOUT).decode()
+                if str(old_pid) in output:
+                    print(f"\n❌ FATAL ERROR: Bot is already running (PID: {old_pid})!")
+                    print("Please stop the other instance before starting a new one.")
+                    sys.exit(1)
+            else:
+                os.kill(old_pid, 0)
+                print(f"\n❌ FATAL ERROR: Bot is already running (PID: {old_pid})!")
+                sys.exit(1)
+        except (ValueError, subprocess.CalledProcessError, ProcessLookupError, PermissionError):
+            pass # Process not found or other error, assume it's safe to overwrite
+    
+    with open(pid_file, "w") as f:
+        f.write(str(os.getpid()))
+
+def cleanup():
+    """Remove PID file on exit."""
+    pid_file = "data/bot.pid"
+    if os.path.exists(pid_file):
+        try:
+            with open(pid_file, "r") as f:
+                current_pid = int(f.read().strip())
+            if current_pid == os.getpid():
+                os.remove(pid_file)
+        except: pass
+    print("\n🛑 Bot stopped and cleaned up.")
+    sys.exit(0)
 
 async def heartbeat_worker():
     """Background task to send heartbeats every 7 seconds."""
@@ -149,6 +187,7 @@ async def bot_loop():
     # Start Telegram Bot
     if sys.platform == "win32":
         try:
+            # Cleanup any orphans by title
             os.system('taskkill /F /FI "WINDOWTITLE eq Telegram Bot UI*" /T >nul 2>&1')
         except: pass
 
@@ -164,12 +203,28 @@ async def bot_loop():
     def cleanup(sig=None, frame=None):
         log_info("Graceful shutdown initiated...")
         if tg_process:
-            if sys.platform == "win32":
-                subprocess.call(['taskkill', '/F', '/T', '/PID', str(tg_process.pid)])
-            else:
-                tg_process.terminate()
+            try:
+                if sys.platform == "win32":
+                    subprocess.call(['taskkill', '/F', '/T', '/PID', str(tg_process.pid)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                else:
+                    tg_process.terminate()
+            except: pass
+        
+        # Remove PID lock
+        pid_file = "data/bot.pid"
+        if os.path.exists(pid_file):
+            try:
+                with open(pid_file, "r") as f:
+                    current_pid = int(f.read().strip())
+                if current_pid == os.getpid():
+                    os.remove(pid_file)
+            except: pass
+            
         log_info("System stopped.")
         sys.exit(0)
+
+    for sig in (sys_signal.SIGINT, sys_signal.SIGTERM):
+        sys_signal.signal(sig, cleanup)
 
     sys_signal.signal(sys_signal.SIGINT, cleanup)
     sys_signal.signal(sys_signal.SIGTERM, cleanup)
@@ -216,7 +271,6 @@ async def bot_loop():
                     close_price = await async_get_last_trade_price(yes_token)
                     
                     if close_price is not None:
-                        # ...
                         market_dir = "UP" if close_price > 0.5 else "DOWN"
                         trade_res = None
                         payout = 0
@@ -256,7 +310,11 @@ async def bot_loop():
                             if trade_res:
                                 outcome_idx = 1 if dir_bet == "YES" else 2
                                 await asyncio.to_thread(save_trade, timestamp=int(time.time()), market_id=closed_market['market_id'], direction=dir_bet, amount=bet_amount, result=trade_res, payout=payout, order_type=pending.get('order_type', "AUTO"), interval=m_interval, outcome_index=outcome_idx)
+                            
+                            # ONLY clear if price was fetched and price fetch didn't return None
                             state['pending_bet'] = None
+                    else:
+                        log_warning(f"[{m_label}] Price fetch FAILED for resolution. Will RETRY next boundary.")
                         
                         if m_id == primary_id: print_result_banner(trade_res, market_dir)
                         await asyncio.to_thread(save_candle, market_id=closed_market['market_id'], token_id=yes_token, timestamp=closed_market['timestamp'], close_price=close_price, interval=m_interval, coin=m_coin)
@@ -429,5 +487,13 @@ async def bot_loop():
             await asyncio.sleep(5)
 
 if __name__ == "__main__":
-    import asyncio
-    asyncio.run(bot_loop())
+    check_single_instance()
+    try:
+        asyncio.run(bot_loop())
+    except KeyboardInterrupt:
+        cleanup()
+    except Exception as e:
+        print(f"Main execution error: {e}")
+        cleanup()
+    finally:
+        cleanup()
