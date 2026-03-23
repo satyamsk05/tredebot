@@ -311,32 +311,33 @@ async def bot_loop():
                                 outcome_idx = 1 if dir_bet == "YES" else 2
                                 await asyncio.to_thread(save_trade, timestamp=int(time.time()), market_id=closed_market['market_id'], direction=dir_bet, amount=bet_amount, result=trade_res, payout=payout, order_type=pending.get('order_type', "AUTO"), interval=m_interval, outcome_index=outcome_idx)
                             
-                            # ONLY clear if price was fetched and price fetch didn't return None
                             state['pending_bet'] = None
                     else:
                         log_warning(f"[{m_label}] Price fetch FAILED for resolution. Will RETRY next boundary.")
-                        
-                        if m_id == primary_id: print_result_banner(trade_res, market_dir)
-                        await asyncio.to_thread(save_candle, market_id=closed_market['market_id'], token_id=yes_token, timestamp=closed_market['timestamp'], close_price=close_price, interval=m_interval, coin=m_coin)
-                        
-                        closes_candles = await asyncio.to_thread(get_last_n_candles, 4, interval=m_interval, coin=m_coin, min_ts=BOT_START_TIME)
-                        closes = [c['close_price'] for c in closes_candles]
-                        trade_signal = check_signal(closes)
-                        
-                        if trade_signal:
-                            if os.path.exists("pause.flag"): 
-                                log_warning(f"[{m_label}] Bot is PAUSED. {trade_signal} Signal ignored.")
-                            elif state['startup_candles'] < 2:
-                                log_warning(f"[{m_label}] Startup: Waiting for session candles ({state['startup_candles']+1}/3)")
-                            else:
-                                next_market = await async_get_active_market(coin=m_coin, offset_minutes=0, interval=m_interval)
-                                if next_market:
-                                    state['active_signal'] = {"direction": trade_signal, "retry_until": now_ts + 30, "amount": mg.get_bet(m_label), "timestamp": next_market['timestamp'], "notified_retry": False}
-                                    ui.status_data["markets"][m_coin]["status"] = f"🎯 {trade_signal} Signal"
-                                    log_info(f"[{m_label}] {trade_signal} Signal! Entry window open for 30s. Streak: {closes}")
+                    
+                    # ALWAYS perform these actions on boundary trigger
+                    if m_id == primary_id: print_result_banner(trade_res, market_dir)
+                    await asyncio.to_thread(save_candle, market_id=closed_market['market_id'], token_id=yes_token, timestamp=closed_market['timestamp'], close_price=close_price, interval=m_interval, coin=m_coin)
+                    
+                    # For signal detection, we use a 3nd-degree trend (need 3 candles)
+                    closes_candles = await asyncio.to_thread(get_last_n_candles, 4, interval=m_interval, coin=m_coin, min_ts=BOT_START_TIME)
+                    closes = [c['close_price'] for c in closes_candles]
+                    trade_signal = check_signal(closes)
+                    
+                    if trade_signal:
+                        if os.path.exists("pause.flag"): 
+                            log_warning(f"[{m_label}] Bot is PAUSED. {trade_signal} Signal ignored.")
+                        elif state['startup_candles'] < 2:
+                            log_warning(f"[{m_label}] Startup: Waiting for session candles ({state['startup_candles']+1}/3)")
                         else:
-                            if ui.status_data["markets"][m_coin]["status"] not in ["✅ WON", "❌ LOST"]:
-                                ui.status_data["markets"][m_coin]["status"] = "Scanning"
+                            next_market = await async_get_active_market(coin=m_coin, offset_minutes=0, interval=m_interval)
+                            if next_market:
+                                state['active_signal'] = {"direction": trade_signal, "retry_until": now_ts + 30, "amount": mg.get_bet(m_label), "timestamp": next_market['timestamp'], "notified_retry": False}
+                                ui.status_data["markets"][m_coin]["status"] = f"🎯 {trade_signal} Signal"
+                                log_info(f"[{m_label}] {trade_signal} Signal! Entry window open for 30s. Streak: {closes}")
+                    else:
+                        if ui.status_data["markets"][m_coin]["status"] not in ["✅ WON", "❌ LOST"]:
+                            ui.status_data["markets"][m_coin]["status"] = "Scanning"
             except Exception as b_err:
                 log_network_error(f"processing {m_label} boundary", b_err)
 
